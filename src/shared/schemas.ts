@@ -5,6 +5,9 @@
  */
 
 import { z } from 'zod';
+import type { DeviceMappingConfig, MappingEntry as SharedMappingEntry } from './types.js';
+import { getDeviceDefinition } from './devices/registry.js';
+import type { DeviceDefinition, ControlDef } from './devices/device-definition.js';
 
 // =============================================================================
 // MIDI Value Schemas
@@ -26,6 +29,9 @@ export const midiValueSchema = z.number().int().min(0).max(127);
 /** Button behavior: toggle or momentary */
 export const buttonBehaviorSchema = z.enum(['toggle', 'momentary']);
 
+/** MIDI message type: 'cc' for Control Change, 'note' for Note On/Off */
+export const midiMessageTypeSchema = z.enum(['cc', 'note']);
+
 /** Single mapping entry */
 export const mappingEntrySchema = z.object({
   inputCC: ccNumberSchema,
@@ -41,6 +47,8 @@ export const mappingEntrySchema = z.object({
   onValue: z.number().int().min(0).max(127).optional(),
   /** CC value sent when button is OFF (0-127, default 0) */
   offValue: z.number().int().min(0).max(127).optional(),
+  /** MIDI message type ('cc' or 'note'). Defaults to 'cc' if omitted. */
+  messageType: midiMessageTypeSchema.optional(),
 });
 
 /** Track mapping (5 controls) */
@@ -465,6 +473,101 @@ export function createDefaultMappingConfig(): MappingConfig {
   return { tracks, transport };
 }
 
+// =============================================================================
+// Device-Aware Default Mapping Factories
+// =============================================================================
+
+/**
+ * Creates an identity mapping for any registered device.
+ *
+ * For 'nanokontrol2': returns the standard MappingConfig shape (backward compat).
+ * For other devices: returns a DeviceMappingConfig with control names and
+ * message types derived from the device definition.
+ *
+ * @param deviceId - Registered device identifier (e.g., 'nanokontrol2', 'akai-midimix')
+ * @returns A MappingConfig (nK2) or DeviceMappingConfig (other devices)
+ * @throws Error if the deviceId is not found in the device registry
+ */
+export function createDefaultMappingForDevice(deviceId: string): MappingConfig | DeviceMappingConfig {
+  if (deviceId === 'nanokontrol2') {
+    return createDefaultMappingConfig();
+  }
+
+  const device = getDeviceDefinition(deviceId);
+  if (!device) {
+    throw new Error(
+      `Unknown device: '${deviceId}'. Cannot create default mapping for an unregistered device.`
+    );
+  }
+
+  return buildDeviceMappingConfig(device);
+}
+
+/**
+ * Builds a DeviceMappingConfig from a device definition using identity mapping.
+ * Every control's outputCC equals its inputCC (hardware MIDI number).
+ */
+function buildDeviceMappingConfig(device: DeviceDefinition): DeviceMappingConfig {
+  const tracks: Record<string, Record<string, SharedMappingEntry>> = {};
+
+  for (let trackIndex = 0; trackIndex < device.trackCount; trackIndex++) {
+    const trackNumber = String(trackIndex + 1);
+    const layout = device.trackLayouts[trackIndex];
+    if (!layout) {
+      continue;
+    }
+
+    const trackEntries: Record<string, SharedMappingEntry> = {};
+    const allControls: ControlDef[] = [...layout.continuousControls, ...layout.buttonControls];
+
+    for (const control of allControls) {
+      const entry: SharedMappingEntry = {
+        inputCC: control.midiNumber,
+        outputCC: control.midiNumber,
+        channel: control.channel,
+        messageType: control.messageType,
+      };
+
+      if (control.kind === 'button') {
+        entry.behavior = control.defaultBehavior;
+      }
+
+      trackEntries[control.name] = entry;
+    }
+
+    tracks[trackNumber] = trackEntries;
+  }
+
+  const sections: Record<string, Record<string, SharedMappingEntry>> = {};
+
+  for (const section of device.extraSections) {
+    const sectionEntries: Record<string, SharedMappingEntry> = {};
+
+    for (const control of section.controls) {
+      const entry: SharedMappingEntry = {
+        inputCC: control.midiNumber,
+        outputCC: control.midiNumber,
+        channel: control.channel,
+        messageType: control.messageType,
+      };
+
+      if (control.kind === 'button') {
+        entry.behavior = control.defaultBehavior;
+      }
+
+      sectionEntries[control.name] = entry;
+    }
+
+    sections[section.name] = sectionEntries;
+  }
+
+  return {
+    deviceId: device.id,
+    tracks,
+    sections,
+  };
+}
+
 /**
  * Creates a new preset with default (identity) mapping and default control values.
  * @param name - The name of the preset
@@ -691,9 +794,194 @@ function createDJMixerPreset(): Preset {
   return preset;
 }
 
+// =============================================================================
+// MidiMix Sample Preset Factories
+// =============================================================================
+
+/**
+ * CC number tables from the Akai MidiMix hardware definition.
+ * Duplicated here as literal arrays to avoid coupling preset factories
+ * to the device definition module at runtime. These are hardware constants
+ * that will never change.
+ */
+const MIDIMIX_KNOB_ROW1 = [16, 20, 24, 28, 46, 50, 54, 58] as const;
+// Knob rows 2 & 3 reserved for future DeviceMappingConfig presets
+// const MIDIMIX_KNOB_ROW2 = [17, 21, 25, 29, 47, 51, 55, 59] as const;
+// const MIDIMIX_KNOB_ROW3 = [18, 22, 26, 30, 48, 52, 56, 60] as const;
+const MIDIMIX_FADERS = [19, 23, 27, 31, 49, 53, 57, 61] as const;
+const MIDIMIX_MUTE_NOTES = [1, 4, 7, 10, 13, 16, 19, 22] as const;
+const MIDIMIX_SOLO_NOTES = [2, 5, 8, 11, 14, 17, 20, 23] as const;
+const MIDIMIX_REC_ARM_NOTES = [3, 6, 9, 12, 15, 18, 21, 24] as const;
+
+/**
+ * Builds a nK2-shaped MappingConfig from MidiMix hardware assignments.
+ * The MidiMix has more controls per track than nK2, so we map:
+ *   knob1 -> knob slot, fader -> slider slot, mute -> mute, solo -> solo, rec_arm -> rec.
+ * Extra knobs (knob2, knob3) and the master section cannot be represented
+ * in the nK2 MappingConfig shape, so they are omitted from preset data.
+ */
+function createMidiMixIdentityMapping(): MappingConfig {
+  const tracks: TrackMapping[] = [];
+
+  for (let i = 0; i < 8; i++) {
+    const idx = i as TrackIndex;
+    tracks.push({
+      knob: {
+        inputCC: MIDIMIX_KNOB_ROW1[idx],
+        outputCC: MIDIMIX_KNOB_ROW1[idx],
+        channel: 1,
+        messageType: 'cc',
+      },
+      slider: {
+        inputCC: MIDIMIX_FADERS[idx],
+        outputCC: MIDIMIX_FADERS[idx],
+        channel: 1,
+        messageType: 'cc',
+      },
+      solo: {
+        inputCC: MIDIMIX_SOLO_NOTES[idx],
+        outputCC: MIDIMIX_SOLO_NOTES[idx],
+        channel: 1,
+        behavior: 'toggle',
+        messageType: 'note',
+      },
+      mute: {
+        inputCC: MIDIMIX_MUTE_NOTES[idx],
+        outputCC: MIDIMIX_MUTE_NOTES[idx],
+        channel: 1,
+        behavior: 'toggle',
+        messageType: 'note',
+      },
+      rec: {
+        inputCC: MIDIMIX_REC_ARM_NOTES[idx],
+        outputCC: MIDIMIX_REC_ARM_NOTES[idx],
+        channel: 1,
+        behavior: 'momentary',
+        messageType: 'note',
+      },
+    });
+  }
+
+  // MidiMix has no transport section; provide empty transport with zeros
+  const emptyTransportEntry = (behavior: 'toggle' | 'momentary'): MappingEntry => ({
+    inputCC: 0,
+    outputCC: 0,
+    channel: 1,
+    behavior,
+  });
+
+  const transport: TransportMapping = {
+    rewind: emptyTransportEntry('momentary'),
+    forward: emptyTransportEntry('momentary'),
+    stop: emptyTransportEntry('momentary'),
+    play: emptyTransportEntry('momentary'),
+    record: emptyTransportEntry('momentary'),
+    cycle: emptyTransportEntry('toggle'),
+    track_left: emptyTransportEntry('momentary'),
+    track_right: emptyTransportEntry('momentary'),
+    marker_set: emptyTransportEntry('momentary'),
+    marker_left: emptyTransportEntry('momentary'),
+    marker_right: emptyTransportEntry('momentary'),
+  };
+
+  return { tracks, transport };
+}
+
+/**
+ * Creates the "Default MidiMix" preset - identity mapping for the Akai MidiMix.
+ * All controls map to their hardware MIDI numbers with correct message types.
+ */
+function createDefaultMidiMixPreset(): Preset {
+  const metadata = createDefaultPresetMetadata('Default MidiMix', 'MidiMix Factory');
+  metadata.description = 'Identity mapping for the Akai MidiMix. All controls pass through unchanged with correct CC/Note message types.';
+  metadata.tags = ['factory', 'midimix', 'default', 'identity'];
+
+  return {
+    metadata,
+    mapping: createMidiMixIdentityMapping(),
+    controlValues: createDefaultControlValues(),
+  };
+}
+
+/**
+ * Creates the "MidiMix Synth" preset.
+ * Knobs mapped to filter/resonance/envelope parameters, faders to oscillator levels.
+ */
+function createMidiMixSynthPreset(): Preset {
+  const preset: Preset = {
+    metadata: createDefaultPresetMetadata('MidiMix Synth', 'MidiMix Factory'),
+    mapping: createMidiMixIdentityMapping(),
+    controlValues: createDefaultControlValues(),
+  };
+  preset.metadata.description = 'Synth control layout for MidiMix. Knobs control filter cutoff, resonance, and envelope. Faders control oscillator and mix levels.';
+  preset.metadata.tags = ['factory', 'midimix', 'synth', 'performance'];
+
+  // Remap knob row 1 to common synth filter/mod CCs
+  const synthKnobCCs = [74, 71, 73, 72, 91, 93, 1, 11] as const;
+  const synthKnobLabels = ['Filter', 'Resonance', 'Attack', 'Release', 'Reverb', 'Chorus', 'Mod Wheel', 'Expression'] as const;
+
+  const trackIndices: TrackIndex[] = [0, 1, 2, 3, 4, 5, 6, 7];
+  for (const i of trackIndices) {
+    const track = getTrack(preset, i);
+    track.knob.outputCC = synthKnobCCs[i];
+    track.knob.label = synthKnobLabels[i];
+  }
+
+  // Remap faders to oscillator levels
+  const synthSliderLabels = ['OSC 1', 'OSC 2', 'Sub', 'Noise', 'Filter Env', 'Amp Env', 'FX Send', 'Master'] as const;
+  for (const i of trackIndices) {
+    const track = getTrack(preset, i);
+    track.slider.label = synthSliderLabels[i];
+  }
+
+  return preset;
+}
+
+/**
+ * Creates the "MidiMix DJ" preset.
+ * Knobs mapped to 3-band EQ per channel, faders to channel volume.
+ */
+function createMidiMixDJPreset(): Preset {
+  const preset: Preset = {
+    metadata: createDefaultPresetMetadata('MidiMix DJ', 'MidiMix Factory'),
+    mapping: createMidiMixIdentityMapping(),
+    controlValues: createDefaultControlValues(),
+  };
+  preset.metadata.description = 'DJ-style layout for MidiMix. Knob row 1 as EQ High, faders as channel volumes, buttons as cue/sync controls.';
+  preset.metadata.tags = ['factory', 'midimix', 'dj', 'live'];
+
+  // Remap knobs to EQ-style CCs (high-frequency band)
+  const eqHighCCs = [22, 23, 24, 25, 26, 27, 28, 29] as const;
+  const eqLabels = ['Ch1 Hi', 'Ch2 Hi', 'Ch3 Hi', 'Ch4 Hi', 'Ch5 Hi', 'Ch6 Hi', 'Ch7 Hi', 'Ch8 Hi'] as const;
+
+  const trackIndices: TrackIndex[] = [0, 1, 2, 3, 4, 5, 6, 7];
+  for (const i of trackIndices) {
+    const track = getTrack(preset, i);
+    track.knob.outputCC = eqHighCCs[i];
+    track.knob.label = eqLabels[i];
+  }
+
+  // Label faders as channel volumes
+  const volLabels = ['Ch1 Vol', 'Ch2 Vol', 'Ch3 Vol', 'Ch4 Vol', 'Ch5 Vol', 'Ch6 Vol', 'Ch7 Vol', 'Ch8 Vol'] as const;
+  for (const i of trackIndices) {
+    const track = getTrack(preset, i);
+    track.slider.label = volLabels[i];
+  }
+
+  // Label mute buttons as cue
+  for (const i of trackIndices) {
+    const track = getTrack(preset, i);
+    track.mute.label = 'Cue';
+    track.solo.label = 'PFL';
+  }
+
+  return preset;
+}
+
 /**
  * Creates all sample presets for first-run initialization.
  * Returns an array of presets ready to be saved.
+ * Includes both nanoKONTROL2 and MidiMix factory presets.
  */
 export function createSamplePresets(): Preset[] {
   return [
@@ -702,6 +990,9 @@ export function createSamplePresets(): Preset[] {
     createDrumsPreset(),
     createDAWTransportPreset(),
     createDJMixerPreset(),
+    createDefaultMidiMixPreset(),
+    createMidiMixSynthPreset(),
+    createMidiMixDJPreset(),
   ];
 }
 

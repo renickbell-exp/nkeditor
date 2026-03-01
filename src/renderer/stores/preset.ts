@@ -2,6 +2,12 @@
  * Preset Store
  *
  * Manages preset library, selection, and A/B comparison.
+ *
+ * Multi-device support:
+ * Presets can optionally be associated with a specific device type via the
+ * deviceType field. Presets without a deviceType default to 'nanokontrol2'
+ * for backward compatibility with existing configurations.
+ * The getPresetsForDevice() selector filters the preset list by device type.
  */
 
 import { create } from 'zustand';
@@ -15,11 +21,27 @@ const getElectronAPI = (): ElectronAPI | null => {
   return (window as { electronAPI?: ElectronAPI }).electronAPI ?? null;
 };
 
+/**
+ * The default device type assigned to presets that predate multi-device support.
+ * Ensures all legacy presets are treated as nK2 presets.
+ */
+const DEFAULT_PRESET_DEVICE_TYPE = 'nanokontrol2';
+
 // =============================================================================
 // Store Types
 // =============================================================================
 
-interface PresetStoreState {
+/**
+ * Extended preset metadata that includes device type tracking.
+ * The deviceType is stored alongside presets in memory but may not be
+ * present in older preset files on disk.
+ */
+interface PresetDeviceTracking {
+  /** Maps preset ID to its associated device type */
+  presetDeviceTypes: Map<string, string>;
+}
+
+interface PresetStoreState extends PresetDeviceTracking {
   // State
   presets: PresetMetadata[];
   selectedId: string | null;
@@ -64,6 +86,26 @@ interface PresetStoreState {
   // Helpers
   getAllTags: () => string[];
   getAllGroups: () => string[];
+
+  // Multi-device preset management
+  /**
+   * Associates a preset with a specific device type.
+   * @param presetId - The preset to tag
+   * @param deviceType - The device type ID (e.g., 'nanokontrol2', 'akai-midimix')
+   */
+  setPresetDeviceType: (presetId: string, deviceType: string) => void;
+
+  /**
+   * Returns the device type associated with a preset.
+   * Defaults to 'nanokontrol2' if no device type has been set.
+   */
+  getPresetDeviceType: (presetId: string) => string;
+
+  /**
+   * Returns all presets that belong to a specific device type.
+   * Presets without an explicit device type are treated as 'nanokontrol2'.
+   */
+  getPresetsForDevice: (deviceType: string) => PresetMetadata[];
 }
 
 // =============================================================================
@@ -81,6 +123,7 @@ export const usePresetStore = create<PresetStoreState>((set, get) => ({
   loading: false,
   error: null,
   hasUnsavedChanges: false,
+  presetDeviceTypes: new Map(),
 
   // Load all presets from disk
   loadPresets: async () => {
@@ -496,6 +539,12 @@ export const usePresetStore = create<PresetStoreState>((set, get) => ({
       const saveResponse = await api.savePreset({ preset: duplicatedPreset, overwrite: false });
 
       if (saveResponse.success && saveResponse.id) {
+        // Preserve device type association from the source preset
+        const sourceDeviceType = get().getPresetDeviceType(id);
+        const newDeviceTypes = new Map(get().presetDeviceTypes);
+        newDeviceTypes.set(saveResponse.id, sourceDeviceType);
+        set({ presetDeviceTypes: newDeviceTypes });
+
         // Refresh preset list
         await get().loadPresets();
         set({ loading: false, selectedId: saveResponse.id });
@@ -509,5 +558,29 @@ export const usePresetStore = create<PresetStoreState>((set, get) => ({
       set({ error: message, loading: false });
       return null;
     }
+  },
+
+  // =========================================================================
+  // Multi-device preset management
+  // =========================================================================
+
+  setPresetDeviceType: (presetId, deviceType) => {
+    set((state) => {
+      const newMap = new Map(state.presetDeviceTypes);
+      newMap.set(presetId, deviceType);
+      return { presetDeviceTypes: newMap };
+    });
+  },
+
+  getPresetDeviceType: (presetId) => {
+    return get().presetDeviceTypes.get(presetId) ?? DEFAULT_PRESET_DEVICE_TYPE;
+  },
+
+  getPresetsForDevice: (deviceType) => {
+    const { presets, presetDeviceTypes } = get();
+    return presets.filter((preset) => {
+      const presetDevice = presetDeviceTypes.get(preset.id) ?? DEFAULT_PRESET_DEVICE_TYPE;
+      return presetDevice === deviceType;
+    });
   },
 }));

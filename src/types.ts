@@ -58,13 +58,19 @@ export type ButtonBehavior = 'toggle' | 'momentary';
 // =============================================================================
 
 /**
+ * MIDI message types used by controls.
+ * 'cc' for Control Change messages, 'note' for Note On/Off messages.
+ */
+export type MidiMessageType = 'cc' | 'note';
+
+/**
  * A single control mapping entry.
- * Maps an input CC from hardware to an output CC sent to the DAW.
+ * Maps an input CC/Note from hardware to an output CC/Note sent to the DAW.
  */
 export interface MappingEntry {
-  /** CC number received from hardware (0-127) */
+  /** CC or Note number received from hardware (0-127) */
   inputCC: number;
-  /** CC number to send to DAW (0-127) */
+  /** CC or Note number to send to DAW (0-127) */
   outputCC: number;
   /** MIDI channel (1-16, not 0-15) */
   channel: number;
@@ -72,6 +78,12 @@ export interface MappingEntry {
   behavior?: ButtonBehavior | undefined;
   /** Optional human-readable label for the control */
   label?: string | undefined;
+  /**
+   * MIDI message type for this control.
+   * Defaults to 'cc' if omitted, preserving backward compatibility
+   * with nanoKONTROL2 configurations that predate multi-device support.
+   */
+  messageType?: MidiMessageType;
 }
 
 /**
@@ -167,9 +179,11 @@ export interface LedState {
 /**
  * Result of parsing a mapping file.
  * Either contains a valid config or an error message.
+ * When a [device] header is present, deviceId identifies the target device.
+ * When absent, deviceId defaults to 'nanokontrol2' for backward compatibility.
  */
 export type ParseResult =
-  | { success: true; config: MappingConfig }
+  | { success: true; config: MappingConfig; deviceId: string }
   | { success: false; error: string };
 
 /**

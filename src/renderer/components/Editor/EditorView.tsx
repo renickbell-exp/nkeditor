@@ -17,7 +17,17 @@ import { useUndoStore } from '../../stores/undo';
 import { NewPresetDialog } from '../Librarian/NewPresetDialog';
 import type { ControlValues, Preset } from '@shared/ipc-protocol';
 
-export function EditorView(): React.ReactElement {
+interface EditorViewProps {
+  /** When provided, this editor is operating in multi-device mode for a specific instance */
+  instanceId?: string;
+}
+
+export function EditorView({ instanceId: _instanceId }: EditorViewProps = {}): React.ReactElement {
+  // instanceId is accepted for forward compatibility with multi-device mode.
+  // When provided, the editor could read per-device state from deviceControls
+  // instead of the legacy tracks/transport state. The legacy single-device
+  // interface remains the primary path until full migration is complete.
+  void _instanceId;
   const tracks = useControlsStore((state) => state.tracks);
   const transport = useControlsStore((state) => state.transport);
   const currentPreset = usePresetStore((state) => state.currentPreset);

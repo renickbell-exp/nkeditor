@@ -33,8 +33,9 @@ describe('parseMapping', () => {
         const track1 = result.config.tracks[0];
         expect(track1).toBeDefined();
         if (track1) {
+          // Input CCs match hardware assignments; output CCs match the current default.txt
           expect(track1.knob.inputCC).toBe(16);
-          expect(track1.knob.outputCC).toBe(16);
+          expect(track1.knob.outputCC).toBe(74);
           expect(track1.knob.channel).toBe(1);
 
           expect(track1.slider.inputCC).toBe(0);

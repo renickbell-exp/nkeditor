@@ -4,15 +4,30 @@
  * The mapping file format supports:
  * - Comments: lines starting with #
  * - Blank lines: ignored
- * - Sections: [trackN] or [transport]
+ * - Device header: [device <id>] (optional, defaults to nanokontrol2)
+ * - Sections: [trackN], [transport], [master], or other device-defined sections
  * - Control mappings: controlType inputCC -> outputCC chN [behavior] ["label"]
+ * - Note syntax: note:N for controls that use MIDI Note messages instead of CC
  *
- * Example:
+ * Example (nanoKONTROL2 - backward compatible):
  * ```
  * [track1]
  * knob    16 -> 16 ch1 "Filter Cutoff"
  * slider   0 ->  0 ch1 "Volume"
  * solo    32 -> 32 ch1 toggle "Solo"
+ * ```
+ *
+ * Example (Akai MidiMix):
+ * ```
+ * [device akai-midimix]
+ *
+ * [track1]
+ * knob1   16 -> 74 ch1 "Filter Cutoff"
+ * fader   19 -> 19 ch1 "Volume"
+ * mute    note:1 -> note:1 ch1 toggle "Mute"
+ *
+ * [master]
+ * master_fader 62 -> 62 ch1 "Master"
  * ```
  */
 
@@ -25,6 +40,7 @@ import type {
   TransportControlType,
   ButtonBehavior,
   ParseResult,
+  MidiMessageType,
 } from './types.js';
 
 import {
@@ -36,6 +52,15 @@ import {
   getDefaultBehavior,
   isContinuousControl,
 } from './constants.js';
+
+import { getDeviceDefinition } from './shared/devices/registry.js';
+import type { DeviceDefinition, ControlDef } from './shared/devices/device-definition.js';
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+const DEFAULT_DEVICE_ID = 'nanokontrol2';
 
 // =============================================================================
 // Parsing Error Class
@@ -59,11 +84,13 @@ export class ParseError extends Error {
 // Internal Types
 // =============================================================================
 
-type SectionType = 'track' | 'transport';
+type SectionType = 'track' | 'transport' | 'extra';
 
 interface CurrentSection {
   type: SectionType;
   trackNumber?: number; // 1-8 for track sections
+  /** Name of the extra section (e.g., 'master') when type is 'extra' */
+  sectionName?: string;
 }
 
 interface PartialTrackMapping {
@@ -88,17 +115,129 @@ interface PartialTransportMapping {
   marker_right?: MappingEntry;
 }
 
+/**
+ * Holds parsed MIDI number along with its message type.
+ * Allows distinguishing between CC and Note values parsed from config lines.
+ */
+interface ParsedMidiNumber {
+  value: number;
+  messageType: MidiMessageType;
+}
+
+// =============================================================================
+// Device-Aware Validation Helpers
+// =============================================================================
+
+/**
+ * Extracts all valid control type names for track sections from a device definition.
+ * Returns the set of control names found across all track layouts.
+ */
+function getDeviceTrackControlTypes(device: DeviceDefinition): string[] {
+  const controlNames = new Set<string>();
+  for (const layout of device.trackLayouts) {
+    for (const control of layout.continuousControls) {
+      controlNames.add(control.name);
+    }
+    for (const button of layout.buttonControls) {
+      controlNames.add(button.name);
+    }
+  }
+  return Array.from(controlNames);
+}
+
+/**
+ * Extracts all valid control type names for a named extra section from a device definition.
+ */
+function getDeviceExtraSectionControlTypes(device: DeviceDefinition, sectionName: string): string[] {
+  const section = device.extraSections.find(s => s.name === sectionName);
+  if (!section) {
+    return [];
+  }
+  return section.controls.map(c => c.name);
+}
+
+/**
+ * Finds the control definition for a given control name in a device's track layout.
+ * Returns undefined if no matching control is found.
+ */
+function findTrackControlDef(device: DeviceDefinition, controlName: string): ControlDef | undefined {
+  const firstLayout = device.trackLayouts[0];
+  if (!firstLayout) {
+    return undefined;
+  }
+  const allControls: ControlDef[] = [...firstLayout.continuousControls, ...firstLayout.buttonControls];
+  return allControls.find(c => c.name === controlName);
+}
+
+/**
+ * Finds the control definition for a given control name in a device's extra section.
+ */
+function findExtraSectionControlDef(device: DeviceDefinition, sectionName: string, controlName: string): ControlDef | undefined {
+  const section = device.extraSections.find(s => s.name === sectionName);
+  if (!section) {
+    return undefined;
+  }
+  return section.controls.find(c => c.name === controlName);
+}
+
+/**
+ * Determines whether a control is continuous based on the device definition.
+ * Falls back to the legacy isContinuousControl() for nK2 compatibility.
+ */
+function isDeviceContinuousControl(controlName: string, device: DeviceDefinition | null, sectionName?: string): boolean {
+  if (!device) {
+    return isContinuousControl(controlName);
+  }
+
+  let controlDef: ControlDef | undefined;
+  if (sectionName) {
+    controlDef = findExtraSectionControlDef(device, sectionName, controlName);
+  } else {
+    controlDef = findTrackControlDef(device, controlName);
+  }
+
+  if (controlDef) {
+    return controlDef.kind === 'continuous';
+  }
+
+  // Fallback for nK2 legacy control types
+  return isContinuousControl(controlName);
+}
+
+/**
+ * Gets the default behavior for a control based on the device definition.
+ * Falls back to the legacy getDefaultBehavior() for nK2 compatibility.
+ */
+function getDeviceDefaultBehavior(controlName: string, device: DeviceDefinition | null, sectionName?: string): 'toggle' | 'momentary' {
+  if (!device) {
+    return getDefaultBehavior(controlName);
+  }
+
+  let controlDef: ControlDef | undefined;
+  if (sectionName) {
+    controlDef = findExtraSectionControlDef(device, sectionName, controlName);
+  } else {
+    controlDef = findTrackControlDef(device, controlName);
+  }
+
+  if (controlDef && controlDef.kind === 'button') {
+    return controlDef.defaultBehavior;
+  }
+
+  return getDefaultBehavior(controlName);
+}
+
 // =============================================================================
 // Validation Helpers
 // =============================================================================
 
 /**
- * Validates that a CC number is within the valid MIDI range (0-127).
+ * Validates that a MIDI number is within the valid range (0-127).
  */
-function validateCCRange(cc: number, fieldName: string, lineNumber: number, lineContent: string): void {
-  if (!Number.isInteger(cc) || cc < MIDI_VALUES.MIN || cc > MIDI_VALUES.MAX) {
+function validateMidiRange(midiNumber: number, fieldName: string, lineNumber: number, lineContent: string): void {
+  if (!Number.isInteger(midiNumber) || midiNumber < MIDI_VALUES.MIN || midiNumber > MIDI_VALUES.MAX) {
     throw new ParseError(
-      `${fieldName} must be an integer between ${MIDI_VALUES.MIN} and ${MIDI_VALUES.MAX}, got: ${cc}`,
+      `${fieldName} must be an integer between ${MIDI_VALUES.MIN} and ${MIDI_VALUES.MAX}, got: ${midiNumber}`,
       lineNumber,
       lineContent
     );
@@ -140,14 +279,89 @@ function isValidBehavior(behavior: string): behavior is ButtonBehavior {
 }
 
 // =============================================================================
+// MIDI Number Parsing
+// =============================================================================
+
+/**
+ * Parses a MIDI number string that may use note:N syntax.
+ *
+ * - Plain number (e.g., "16") -> { value: 16, messageType: 'cc' }
+ * - Note prefix (e.g., "note:1") -> { value: 1, messageType: 'note' }
+ *
+ * Returns null if the string cannot be parsed as a valid MIDI number.
+ */
+function parseMidiNumber(raw: string): ParsedMidiNumber | null {
+  const notePrefixMatch = raw.match(/^note:(\d+)$/i);
+  if (notePrefixMatch) {
+    const noteStr = notePrefixMatch[1];
+    if (noteStr === undefined) {
+      return null;
+    }
+    const noteValue = parseInt(noteStr, 10);
+    if (isNaN(noteValue)) {
+      return null;
+    }
+    return { value: noteValue, messageType: 'note' };
+  }
+
+  const ccValue = parseInt(raw, 10);
+  if (isNaN(ccValue)) {
+    return null;
+  }
+  return { value: ccValue, messageType: 'cc' };
+}
+
+// =============================================================================
+// Device Header Scanning
+// =============================================================================
+
+/**
+ * Scans the config content for a [device <id>] header line.
+ * Returns the device ID if found, or null if no device header is present.
+ * Throws ParseError if the device header has invalid syntax.
+ */
+function scanForDeviceHeader(lines: string[]): { deviceId: string; lineNumber: number } | null {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === undefined) {
+      continue;
+    }
+    const trimmed = line.trim();
+
+    // Skip empty lines and comments
+    if (trimmed === '' || trimmed.startsWith('#')) {
+      continue;
+    }
+
+    // Check for [device ...] header
+    const deviceMatch = trimmed.match(/^\[device\s+(.+)\]$/i);
+    if (deviceMatch) {
+      const deviceId = deviceMatch[1]?.trim().toLowerCase();
+      if (!deviceId) {
+        throw new ParseError('Missing device ID in [device] header', i + 1, line);
+      }
+      return { deviceId, lineNumber: i + 1 };
+    }
+  }
+  return null;
+}
+
+// =============================================================================
 // Line Parsing
 // =============================================================================
 
 /**
- * Parses a section header line like [track1] or [transport].
+ * Parses a section header line like [track1], [transport], [master], etc.
  * Returns null if the line is not a section header.
+ *
+ * When a device definition is provided, extra section names from that device
+ * are accepted in addition to the standard [trackN] and [transport] sections.
  */
-function parseSectionHeader(line: string, lineNumber: number): CurrentSection | null {
+function parseSectionHeader(
+  line: string,
+  lineNumber: number,
+  device: DeviceDefinition | null
+): CurrentSection | null {
   const trimmed = line.trim();
 
   if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) {
@@ -155,6 +369,11 @@ function parseSectionHeader(line: string, lineNumber: number): CurrentSection | 
   }
 
   const sectionName = trimmed.slice(1, -1).toLowerCase();
+
+  // Skip [device ...] headers - they are handled separately
+  if (sectionName.startsWith('device ')) {
+    return null;
+  }
 
   if (sectionName === 'transport') {
     return { type: 'transport' };
@@ -168,18 +387,37 @@ function parseSectionHeader(line: string, lineNumber: number): CurrentSection | 
       throw new ParseError('Failed to parse track number', lineNumber, line);
     }
     const trackNumber = parseInt(capturedNumber, 10);
-    if (trackNumber >= TRACK_CONSTANTS.FIRST && trackNumber <= TRACK_CONSTANTS.LAST) {
+    const maxTrack = device ? device.trackCount : TRACK_CONSTANTS.LAST;
+    if (trackNumber >= TRACK_CONSTANTS.FIRST && trackNumber <= maxTrack) {
       return { type: 'track', trackNumber };
     }
     throw new ParseError(
-      `Invalid track number: ${trackNumber}. Must be between ${TRACK_CONSTANTS.FIRST} and ${TRACK_CONSTANTS.LAST}`,
+      `Invalid track number: ${trackNumber}. Must be between ${TRACK_CONSTANTS.FIRST} and ${maxTrack}`,
       lineNumber,
       line
     );
   }
 
+  // Check if the section name matches any extra section in the device definition
+  if (device) {
+    const extraSection = device.extraSections.find(s => s.name === sectionName);
+    if (extraSection) {
+      return { type: 'extra', sectionName };
+    }
+  }
+
+  // Build a list of valid section names for the error message
+  const validSections = ['[trackN] (1-8)', '[transport]'];
+  if (device) {
+    for (const extra of device.extraSections) {
+      if (extra.name !== 'transport') {
+        validSections.push(`[${extra.name}]`);
+      }
+    }
+  }
+
   throw new ParseError(
-    `Unknown section: ${sectionName}. Expected [trackN] (1-8) or [transport]`,
+    `Unknown section: ${sectionName}. Expected one of: ${validSections.join(', ')}`,
     lineNumber,
     line
   );
@@ -188,17 +426,21 @@ function parseSectionHeader(line: string, lineNumber: number): CurrentSection | 
 /**
  * Parses a control mapping line.
  *
- * Format: controlType inputCC -> outputCC [chN] [behavior] ["label"]
+ * Format: controlType inputMidi -> outputMidi [chN] [behavior] ["label"]
+ *
+ * MIDI numbers can be plain integers (CC) or note:N (Note messages).
  *
  * Examples:
  * - knob 16 -> 16 ch1 "Filter Cutoff"
  * - solo 32 -> 32 ch1 toggle "Solo Button"
- * - slider 0 -> 0
+ * - mute note:1 -> note:1 ch1 toggle "Mute"
  */
 function parseControlLine(
   line: string,
   lineNumber: number,
-  currentSection: CurrentSection | null
+  currentSection: CurrentSection | null,
+  device: DeviceDefinition | null,
+  isLegacyNk2: boolean
 ): { controlType: string; entry: MappingEntry } {
   if (!currentSection) {
     throw new ParseError(
@@ -235,12 +477,12 @@ function parseControlLine(
   }
 
   const controlTypeRaw = parts[0];
-  const inputCCStr = parts[1];
+  const inputMidiStr = parts[1];
   const arrow = parts[2];
-  const outputCCStr = parts[3];
+  const outputMidiStr = parts[3];
 
   // Validate all required parts exist
-  if (controlTypeRaw === undefined || inputCCStr === undefined || arrow === undefined || outputCCStr === undefined) {
+  if (controlTypeRaw === undefined || inputMidiStr === undefined || arrow === undefined || outputMidiStr === undefined) {
     throw new ParseError(
       'Invalid control mapping format. Expected: controlType inputCC -> outputCC [chN] [behavior] ["label"]',
       lineNumber,
@@ -259,19 +501,19 @@ function parseControlLine(
     );
   }
 
-  // Parse CC numbers
-  const inputCC = parseInt(inputCCStr, 10);
-  const outputCC = parseInt(outputCCStr, 10);
+  // Parse MIDI numbers (supporting note:N syntax)
+  const inputMidi = parseMidiNumber(inputMidiStr);
+  const outputMidi = parseMidiNumber(outputMidiStr);
 
-  if (isNaN(inputCC)) {
-    throw new ParseError(`Invalid input CC: ${inputCCStr}`, lineNumber, line);
+  if (!inputMidi) {
+    throw new ParseError(`Invalid input MIDI number: ${inputMidiStr}`, lineNumber, line);
   }
-  if (isNaN(outputCC)) {
-    throw new ParseError(`Invalid output CC: ${outputCCStr}`, lineNumber, line);
+  if (!outputMidi) {
+    throw new ParseError(`Invalid output MIDI number: ${outputMidiStr}`, lineNumber, line);
   }
 
-  validateCCRange(inputCC, 'Input CC', lineNumber, line);
-  validateCCRange(outputCC, 'Output CC', lineNumber, line);
+  validateMidiRange(inputMidi.value, 'Input CC', lineNumber, line);
+  validateMidiRange(outputMidi.value, 'Output CC', lineNumber, line);
 
   // Parse optional channel and behavior from remaining parts
   let channel: number = MIDI_CHANNELS.DEFAULT;
@@ -309,32 +551,69 @@ function parseControlLine(
     );
   }
 
-  // Validate control type based on section
-  if (currentSection.type === 'track') {
-    if (!isValidTrackControlType(controlType)) {
-      throw new ParseError(
-        `Invalid track control type: ${controlType}. Expected one of: ${TRACK_CONTROL_TYPES.join(', ')}`,
-        lineNumber,
-        line
-      );
+  // Validate control type based on section and device
+  const sectionName = currentSection.sectionName;
+  if (isLegacyNk2) {
+    // Use legacy validation for nK2 configs (preserves existing error messages exactly)
+    if (currentSection.type === 'track') {
+      if (!isValidTrackControlType(controlType)) {
+        throw new ParseError(
+          `Invalid track control type: ${controlType}. Expected one of: ${TRACK_CONTROL_TYPES.join(', ')}`,
+          lineNumber,
+          line
+        );
+      }
+    } else if (currentSection.type === 'transport') {
+      if (!isValidTransportControlType(controlType)) {
+        throw new ParseError(
+          `Invalid transport control type: ${controlType}. Expected one of: ${TRANSPORT_CONTROL_TYPES.join(', ')}`,
+          lineNumber,
+          line
+        );
+      }
     }
-  } else {
-    if (!isValidTransportControlType(controlType)) {
-      throw new ParseError(
-        `Invalid transport control type: ${controlType}. Expected one of: ${TRANSPORT_CONTROL_TYPES.join(', ')}`,
-        lineNumber,
-        line
-      );
+  } else if (device) {
+    // Device-aware validation
+    if (currentSection.type === 'track') {
+      const validTypes = getDeviceTrackControlTypes(device);
+      if (!validTypes.includes(controlType)) {
+        throw new ParseError(
+          `Invalid track control type: ${controlType}. Expected one of: ${validTypes.join(', ')}`,
+          lineNumber,
+          line
+        );
+      }
+    } else if (currentSection.type === 'transport') {
+      const validTypes = getDeviceExtraSectionControlTypes(device, 'transport');
+      if (!validTypes.includes(controlType)) {
+        throw new ParseError(
+          `Invalid transport control type: ${controlType}. Expected one of: ${validTypes.join(', ')}`,
+          lineNumber,
+          line
+        );
+      }
+    } else if (currentSection.type === 'extra' && sectionName) {
+      const validTypes = getDeviceExtraSectionControlTypes(device, sectionName);
+      if (!validTypes.includes(controlType)) {
+        throw new ParseError(
+          `Invalid ${sectionName} control type: ${controlType}. Expected one of: ${validTypes.join(', ')}`,
+          lineNumber,
+          line
+        );
+      }
     }
   }
 
+  // Determine if the control is continuous
+  const isContinuous = isDeviceContinuousControl(controlType, device, sectionName);
+
   // Apply default behavior for buttons if not specified
-  if (!isContinuousControl(controlType) && behavior === undefined) {
-    behavior = getDefaultBehavior(controlType);
+  if (!isContinuous && behavior === undefined) {
+    behavior = getDeviceDefaultBehavior(controlType, device, sectionName);
   }
 
   // Continuous controls should not have behavior
-  if (isContinuousControl(controlType) && behavior !== undefined) {
+  if (isContinuous && behavior !== undefined) {
     throw new ParseError(
       `Behavior (${behavior}) is not valid for continuous control type: ${controlType}`,
       lineNumber,
@@ -342,9 +621,14 @@ function parseControlLine(
     );
   }
 
+  // Determine the effective messageType from the parsed MIDI numbers.
+  // If either input or output used note: prefix, the entry uses 'note'.
+  // For legacy nK2 configs (no note: prefix), we omit messageType to preserve backward compat.
+  const hasNotePrefix = inputMidi.messageType === 'note' || outputMidi.messageType === 'note';
+
   const entry: MappingEntry = {
-    inputCC,
-    outputCC,
+    inputCC: inputMidi.value,
+    outputCC: outputMidi.value,
     channel,
   };
 
@@ -354,6 +638,27 @@ function parseControlLine(
 
   if (label !== undefined) {
     entry.label = label;
+  }
+
+  // Set messageType when note: syntax is used, or when the device definition
+  // indicates this control uses Note messages. Omitted for plain CC to preserve
+  // byte-identical backward compatibility with nK2 configs.
+  if (hasNotePrefix) {
+    entry.messageType = 'note';
+  } else if (!isLegacyNk2 && device) {
+    // For non-legacy configs, check the device definition for the expected message type
+    let controlDef: ControlDef | undefined;
+    if (sectionName) {
+      controlDef = findExtraSectionControlDef(device, sectionName, controlType);
+    } else {
+      controlDef = findTrackControlDef(device, controlType);
+    }
+    if (controlDef && controlDef.messageType === 'note') {
+      entry.messageType = 'note';
+    } else if (controlDef && controlDef.messageType === 'cc') {
+      // Explicitly set 'cc' for device-aware configs to be unambiguous
+      entry.messageType = 'cc';
+    }
   }
 
   return { controlType, entry };
@@ -466,16 +771,21 @@ function validateTransportMapping(partial: PartialTransportMapping): TransportMa
 // =============================================================================
 
 /**
- * Parses a mapping configuration file content and returns a MappingConfig.
+ * Parses a mapping configuration file content and returns a ParseResult.
+ *
+ * Supports multi-device configs via the optional [device <id>] header.
+ * When no device header is present, defaults to nanokontrol2 and uses
+ * the legacy nK2-specific parsing path for exact backward compatibility.
  *
  * @param content - The raw string content of the mapping file
- * @returns ParseResult indicating success with config or failure with error message
+ * @returns ParseResult indicating success with config and deviceId, or failure with error message
  *
  * @example
  * ```typescript
  * const content = fs.readFileSync('mappings/default.txt', 'utf-8');
  * const result = parseMapping(content);
  * if (result.success) {
+ *   console.log('Device:', result.deviceId);
  *   console.log('Loaded', result.config.tracks.length, 'tracks');
  * } else {
  *   console.error('Parse error:', result.error);
@@ -486,16 +796,56 @@ export function parseMapping(content: string): ParseResult {
   try {
     const lines = content.split('\n');
 
+    // Scan for device header before main parsing
+    const deviceHeader = scanForDeviceHeader(lines);
+    const deviceId = deviceHeader ? deviceHeader.deviceId : DEFAULT_DEVICE_ID;
+
+    // Load device definition when an explicit header is present
+    let device: DeviceDefinition | null = null;
+    if (deviceHeader) {
+      const foundDevice = getDeviceDefinition(deviceId);
+      if (!foundDevice) {
+        return {
+          success: false,
+          error: `Unknown device: '${deviceId}'. No device definition found for this identifier`,
+        };
+      }
+      device = foundDevice;
+    }
+
+    // When no [device] header is present and the default is nK2,
+    // use the legacy code path for byte-identical backward compatibility
+    const isLegacyNk2 = !deviceHeader;
+
+    // For non-nK2 devices, we still use the nK2 MappingConfig shape.
+    // The device definition guides validation, but the output is always
+    // MappingConfig (tracks[] + transport) since that is the shared type.
+    // Future phases will introduce a more flexible DeviceMappingConfig.
+
     // Initialize tracking structures
+    const trackCount = device ? device.trackCount : TRACK_CONSTANTS.COUNT;
     const tracks: Map<number, PartialTrackMapping> = new Map();
-    for (let i = 1; i <= TRACK_CONSTANTS.COUNT; i++) {
+    for (let i = 1; i <= trackCount; i++) {
       tracks.set(i, createEmptyPartialTrack());
     }
 
+    // For device-aware configs, use a generic record for track data
+    // to support control names beyond the nK2 set
+    const deviceTracks: Map<number, Record<string, MappingEntry>> = new Map();
+    if (!isLegacyNk2) {
+      for (let i = 1; i <= trackCount; i++) {
+        deviceTracks.set(i, {});
+      }
+    }
+
     const transport: PartialTransportMapping = {};
+    // Generic storage for extra section controls (e.g., master)
+    const extraSections: Map<string, Record<string, MappingEntry>> = new Map();
     let currentSection: CurrentSection | null = null;
     let hasTransportSection = false;
     const definedTracks = new Set<number>();
+    // Track which extra sections have been defined
+    const definedExtraSections = new Set<string>();
 
     // Parse each line
     for (let i = 0; i < lines.length; i++) {
@@ -514,20 +864,30 @@ export function parseMapping(content: string): ParseResult {
         continue;
       }
 
+      // Skip [device ...] header lines (already processed above)
+      if (/^\[device\s+/i.test(trimmed)) {
+        continue;
+      }
+
       // Check for section header
-      const sectionHeader = parseSectionHeader(trimmed, lineNumber);
+      const sectionHeader = parseSectionHeader(trimmed, lineNumber, device);
       if (sectionHeader) {
         currentSection = sectionHeader;
         if (sectionHeader.type === 'transport') {
           hasTransportSection = true;
-        } else if (sectionHeader.trackNumber !== undefined) {
+        } else if (sectionHeader.type === 'track' && sectionHeader.trackNumber !== undefined) {
           definedTracks.add(sectionHeader.trackNumber);
+        } else if (sectionHeader.type === 'extra' && sectionHeader.sectionName) {
+          definedExtraSections.add(sectionHeader.sectionName);
+          if (!extraSections.has(sectionHeader.sectionName)) {
+            extraSections.set(sectionHeader.sectionName, {});
+          }
         }
         continue;
       }
 
       // Parse control mapping line
-      const { controlType, entry } = parseControlLine(line, lineNumber, currentSection);
+      const { controlType, entry } = parseControlLine(line, lineNumber, currentSection, device, isLegacyNk2);
 
       if (currentSection === null) {
         // This should not happen due to check in parseControlLine, but TypeScript needs it
@@ -536,93 +896,241 @@ export function parseMapping(content: string): ParseResult {
 
       // Store the mapping in the appropriate structure
       if (currentSection.type === 'track' && currentSection.trackNumber !== undefined) {
-        const trackMapping = tracks.get(currentSection.trackNumber);
-        if (!trackMapping) {
-          throw new ParseError(
-            `Internal error: track ${currentSection.trackNumber} not initialized`,
-            lineNumber,
-            line
-          );
+        if (isLegacyNk2) {
+          const trackMapping = tracks.get(currentSection.trackNumber);
+          if (!trackMapping) {
+            throw new ParseError(
+              `Internal error: track ${currentSection.trackNumber} not initialized`,
+              lineNumber,
+              line
+            );
+          }
+
+          // Type-safe assignment for track controls
+          const trackControl = controlType as ControlType;
+
+          // Check for duplicate control definitions
+          if (trackMapping[trackControl] !== undefined) {
+            throw new ParseError(
+              `Duplicate ${controlType} definition in track${currentSection.trackNumber}`,
+              lineNumber,
+              line
+            );
+          }
+
+          trackMapping[trackControl] = entry;
+        } else {
+          // Device-aware track storage
+          const trackData = deviceTracks.get(currentSection.trackNumber);
+          if (!trackData) {
+            throw new ParseError(
+              `Internal error: track ${currentSection.trackNumber} not initialized`,
+              lineNumber,
+              line
+            );
+          }
+
+          if (trackData[controlType] !== undefined) {
+            throw new ParseError(
+              `Duplicate ${controlType} definition in track${currentSection.trackNumber}`,
+              lineNumber,
+              line
+            );
+          }
+
+          trackData[controlType] = entry;
         }
-
-        // Type-safe assignment for track controls
-        const trackControl = controlType as ControlType;
-
-        // Check for duplicate control definitions
-        if (trackMapping[trackControl] !== undefined) {
-          throw new ParseError(
-            `Duplicate ${controlType} definition in track${currentSection.trackNumber}`,
-            lineNumber,
-            line
-          );
-        }
-
-        trackMapping[trackControl] = entry;
       } else if (currentSection.type === 'transport') {
-        // Type-safe assignment for transport controls
-        const transportControl = controlType as TransportControlType;
+        if (isLegacyNk2) {
+          // Type-safe assignment for transport controls
+          const transportControl = controlType as TransportControlType;
 
-        // Check for duplicate control definitions
-        if (transport[transportControl] !== undefined) {
+          // Check for duplicate control definitions
+          if (transport[transportControl] !== undefined) {
+            throw new ParseError(
+              `Duplicate ${controlType} definition in transport section`,
+              lineNumber,
+              line
+            );
+          }
+
+          transport[transportControl] = entry;
+        } else {
+          // Device-aware transport storage
+          const transportSection = extraSections.get('transport') ?? {};
+          if (transportSection[controlType] !== undefined) {
+            throw new ParseError(
+              `Duplicate ${controlType} definition in transport section`,
+              lineNumber,
+              line
+            );
+          }
+          transportSection[controlType] = entry;
+          extraSections.set('transport', transportSection);
+        }
+      } else if (currentSection.type === 'extra' && currentSection.sectionName) {
+        const sectionData = extraSections.get(currentSection.sectionName);
+        if (!sectionData) {
           throw new ParseError(
-            `Duplicate ${controlType} definition in transport section`,
+            `Internal error: section ${currentSection.sectionName} not initialized`,
             lineNumber,
             line
           );
         }
 
-        transport[transportControl] = entry;
+        if (sectionData[controlType] !== undefined) {
+          throw new ParseError(
+            `Duplicate ${controlType} definition in ${currentSection.sectionName} section`,
+            lineNumber,
+            line
+          );
+        }
+
+        sectionData[controlType] = entry;
       }
     }
 
-    // Validate all tracks are defined
-    for (let i = 1; i <= TRACK_CONSTANTS.COUNT; i++) {
-      if (!definedTracks.has(i)) {
+    // === Legacy nK2 validation path ===
+    if (isLegacyNk2) {
+      // Validate all tracks are defined
+      for (let i = 1; i <= TRACK_CONSTANTS.COUNT; i++) {
+        if (!definedTracks.has(i)) {
+          return {
+            success: false,
+            error: `Track ${i} is not defined. All 8 tracks (track1-track8) must be present`,
+          };
+        }
+      }
+
+      // Validate transport section is defined
+      if (!hasTransportSection) {
         return {
           success: false,
-          error: `Track ${i} is not defined. All 8 tracks (track1-track8) must be present`,
-        };
-      }
-    }
-
-    // Validate transport section is defined
-    if (!hasTransportSection) {
-      return {
-        success: false,
-        error: 'Transport section is not defined. A [transport] section is required',
-      };
-    }
-
-    // Validate and build final track mappings
-    const finalTracks: TrackMapping[] = [];
-    for (let i = 1; i <= TRACK_CONSTANTS.COUNT; i++) {
-      const partial = tracks.get(i);
-      if (!partial) {
-        return {
-          success: false,
-          error: `Internal error: track ${i} not found`,
+          error: 'Transport section is not defined. A [transport] section is required',
         };
       }
 
+      // Validate and build final track mappings
+      const finalTracks: TrackMapping[] = [];
+      for (let i = 1; i <= TRACK_CONSTANTS.COUNT; i++) {
+        const partial = tracks.get(i);
+        if (!partial) {
+          return {
+            success: false,
+            error: `Internal error: track ${i} not found`,
+          };
+        }
+
+        try {
+          finalTracks.push(validateTrackMapping(partial, i));
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }
+
+      // Validate and build final transport mapping
+      let finalTransport: TransportMapping;
       try {
-        finalTracks.push(validateTrackMapping(partial, i));
+        finalTransport = validateTransportMapping(transport);
       } catch (err) {
         return {
           success: false,
           error: err instanceof Error ? err.message : String(err),
         };
       }
+
+      return {
+        success: true,
+        config: {
+          tracks: finalTracks,
+          transport: finalTransport,
+        },
+        deviceId,
+      };
     }
 
-    // Validate and build final transport mapping
-    let finalTransport: TransportMapping;
-    try {
-      finalTransport = validateTransportMapping(transport);
-    } catch (err) {
-      return {
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      };
+    // === Device-aware validation path ===
+    // Build MappingConfig from device track data.
+    // We map device control names to the nK2 MappingConfig shape where possible,
+    // storing extra controls in a best-fit manner.
+    const finalTracks: TrackMapping[] = [];
+    for (let i = 1; i <= trackCount; i++) {
+      const trackData = deviceTracks.get(i);
+      if (!trackData || !definedTracks.has(i)) {
+        // Not all tracks need to be present for non-nK2 devices at this stage;
+        // build a default entry for missing tracks
+        continue;
+      }
+
+      // Map device control names to nK2 TrackMapping fields.
+      // This is a best-effort mapping for the shared MappingConfig type.
+      const mappedTrack: PartialTrackMapping = {};
+
+      // Map continuous controls: knob/knob1 -> knob, slider/fader -> slider
+      if (trackData['knob']) {
+        mappedTrack.knob = trackData['knob'];
+      } else if (trackData['knob1']) {
+        mappedTrack.knob = trackData['knob1'];
+      }
+
+      if (trackData['slider']) {
+        mappedTrack.slider = trackData['slider'];
+      } else if (trackData['fader']) {
+        mappedTrack.slider = trackData['fader'];
+      }
+
+      // Map button controls
+      if (trackData['solo']) {
+        mappedTrack.solo = trackData['solo'];
+      }
+      if (trackData['mute']) {
+        mappedTrack.mute = trackData['mute'];
+      }
+      if (trackData['rec']) {
+        mappedTrack.rec = trackData['rec'];
+      } else if (trackData['rec_arm']) {
+        mappedTrack.rec = trackData['rec_arm'];
+      }
+
+      // Only require the controls that were provided; partial tracks are allowed
+      // for device-aware configs since devices have different control sets
+      finalTracks.push({
+        knob: mappedTrack.knob ?? { inputCC: 0, outputCC: 0, channel: 1 },
+        slider: mappedTrack.slider ?? { inputCC: 0, outputCC: 0, channel: 1 },
+        solo: mappedTrack.solo ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'toggle' },
+        mute: mappedTrack.mute ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'toggle' },
+        rec: mappedTrack.rec ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'momentary' },
+      });
+    }
+
+    // Build transport from extra sections or the transport section
+    const transportData = extraSections.get('transport');
+    const finalTransport: TransportMapping = {
+      rewind: transportData?.['rewind'] ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'momentary' },
+      forward: transportData?.['forward'] ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'momentary' },
+      stop: transportData?.['stop'] ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'momentary' },
+      play: transportData?.['play'] ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'momentary' },
+      record: transportData?.['record'] ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'momentary' },
+      cycle: transportData?.['cycle'] ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'toggle' },
+      track_left: transportData?.['track_left'] ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'momentary' },
+      track_right: transportData?.['track_right'] ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'momentary' },
+      marker_set: transportData?.['marker_set'] ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'momentary' },
+      marker_left: transportData?.['marker_left'] ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'momentary' },
+      marker_right: transportData?.['marker_right'] ?? { inputCC: 0, outputCC: 0, channel: 1, behavior: 'momentary' },
+    };
+
+    // Pad tracks array to 8 if needed (MappingConfig requires exactly 8)
+    while (finalTracks.length < 8) {
+      finalTracks.push({
+        knob: { inputCC: 0, outputCC: 0, channel: 1 },
+        slider: { inputCC: 0, outputCC: 0, channel: 1 },
+        solo: { inputCC: 0, outputCC: 0, channel: 1, behavior: 'toggle' },
+        mute: { inputCC: 0, outputCC: 0, channel: 1, behavior: 'toggle' },
+        rec: { inputCC: 0, outputCC: 0, channel: 1, behavior: 'momentary' },
+      });
     }
 
     return {
@@ -631,6 +1139,7 @@ export function parseMapping(content: string): ParseResult {
         tracks: finalTracks,
         transport: finalTransport,
       },
+      deviceId,
     };
   } catch (err) {
     if (err instanceof ParseError) {

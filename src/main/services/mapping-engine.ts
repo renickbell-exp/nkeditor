@@ -24,6 +24,7 @@ import type {
 } from '@shared/types.js';
 import { MIDI_VALUE_ON, MIDI_VALUE_OFF, hasLed } from '@shared/types.js';
 import { isContinuousControl } from '@shared/constants.js';
+import type { MidiMessageType, DeviceDefinition } from '@shared/devices/device-definition.js';
 
 // =============================================================================
 // Types
@@ -51,6 +52,30 @@ export interface ProcessedMessage {
   buttonState?: boolean | undefined;
   /** Optional label from mapping configuration */
   label?: string | undefined;
+  /**
+   * MIDI message type that produced this result.
+   * Defaults to 'cc' for backward compatibility with nanoKONTROL2.
+   */
+  messageType?: MidiMessageType;
+}
+
+// =============================================================================
+// Composite Key Utility
+// =============================================================================
+
+/**
+ * Creates a composite lookup key that distinguishes between CC and Note
+ * messages with the same MIDI number.
+ *
+ * Without this, a CC 25 from a nanoKONTROL2 would collide with Note 25
+ * from a MidiMix in the lookup map. The composite key prevents that.
+ *
+ * @param messageType - 'cc' or 'note'
+ * @param midiNumber - The CC number or Note number (0-127)
+ * @returns A string like "cc:42" or "note:25"
+ */
+export function makeLookupKey(messageType: MidiMessageType, midiNumber: number): string {
+  return `${messageType}:${midiNumber}`;
 }
 
 /**
@@ -66,8 +91,8 @@ export interface ButtonStateChangeEvent {
 }
 
 /**
- * Internal structure for fast CC lookup.
- * Maps input CC to its mapping entry and metadata.
+ * Internal structure for fast CC/Note lookup.
+ * Maps an input MIDI number to its mapping entry and metadata.
  */
 interface MappingLookupEntry {
   /** The mapping entry from configuration */
@@ -78,6 +103,8 @@ interface MappingLookupEntry {
   isButton: boolean;
   /** Button behavior (only for buttons) */
   behavior?: ButtonBehavior | undefined;
+  /** MIDI message type for this entry (defaults to 'cc') */
+  messageType: MidiMessageType;
 }
 
 // =============================================================================
@@ -111,28 +138,47 @@ export class MappingEngine extends EventEmitter {
   /** Current mapping configuration */
   private config: MappingConfig;
 
-  /** Button toggle states: inputCC -> isOn */
-  private buttonStates: Map<number, boolean> = new Map();
+  /** Button toggle states: composite key -> isOn */
+  private buttonStates: Map<string, boolean> = new Map();
 
-  /** Fast lookup map: inputCC -> mapping info */
+  /**
+   * Legacy lookup map: inputCC -> mapping info (numeric keys).
+   * Retained for backward compatibility with code that calls getButtonState(cc).
+   * When no device definition is set, this is the primary lookup.
+   */
   private ccToMapping: Map<number, MappingLookupEntry> = new Map();
+
+  /**
+   * Composite key lookup map: "cc:42" or "note:25" -> mapping info.
+   * Prevents collisions between CC and Note messages with the same number.
+   * This is the primary lookup when a device definition is available.
+   */
+  private compositeToMapping: Map<string, MappingLookupEntry> = new Map();
+
+  /**
+   * Optional device definition for building the lookup map
+   * with correct message types per control.
+   */
+  private deviceDefinition: DeviceDefinition | null = null;
 
   /**
    * Creates a new MappingEngine with the given configuration.
    *
    * @param config - The mapping configuration to use
+   * @param deviceDefinition - Optional device definition for message type awareness
    */
-  constructor(config: MappingConfig) {
+  constructor(config: MappingConfig, deviceDefinition?: DeviceDefinition) {
     super();
     this.config = config;
+    this.deviceDefinition = deviceDefinition ?? null;
     this.buildLookupMap();
   }
 
   /**
    * Processes an incoming CC message from hardware.
    *
-   * Looks up the mapping for the input CC, applies any transformations
-   * (toggle behavior, channel remapping), and emits the processed result.
+   * Delegates to processMessage() with message type 'cc'.
+   * This method's signature and behavior are preserved exactly for backward compatibility.
    *
    * @param channel - Input MIDI channel (0-indexed from easymidi)
    * @param cc - Input CC number (0-127)
@@ -140,10 +186,47 @@ export class MappingEngine extends EventEmitter {
    * @returns ProcessedMessage if CC is mapped, null if not mapped
    */
   processCC(_channel: number, cc: number, value: number): ProcessedMessage | null {
-    const lookupEntry = this.ccToMapping.get(cc);
+    return this.processMessage('cc', _channel, cc, value);
+  }
+
+  /**
+   * Processes an incoming Note message from hardware.
+   *
+   * Delegates to processMessage() with message type 'note'.
+   * Used by devices like the Akai MidiMix that send Note On/Off for buttons.
+   *
+   * @param channel - Input MIDI channel (0-indexed from easymidi)
+   * @param note - Input Note number (0-127)
+   * @param velocity - Input velocity (0-127)
+   * @returns ProcessedMessage if Note is mapped, null if not mapped
+   */
+  processNote(channel: number, note: number, velocity: number): ProcessedMessage | null {
+    return this.processMessage('note', channel, note, velocity);
+  }
+
+  /**
+   * Unified entry point for processing any MIDI message (CC or Note).
+   *
+   * Looks up the mapping using a composite key (e.g., "cc:42" or "note:25"),
+   * applies button transformations, and emits the processed result.
+   *
+   * @param messageType - 'cc' or 'note'
+   * @param channel - Input MIDI channel (0-indexed from easymidi)
+   * @param midiNumber - CC number or Note number (0-127)
+   * @param value - CC value or Note velocity (0-127)
+   * @returns ProcessedMessage if the message is mapped, null if not mapped
+   */
+  processMessage(
+    messageType: MidiMessageType,
+    _channel: number,
+    midiNumber: number,
+    value: number
+  ): ProcessedMessage | null {
+    const compositeKey = makeLookupKey(messageType, midiNumber);
+    const lookupEntry = this.compositeToMapping.get(compositeKey)
+      ?? (messageType === 'cc' ? this.ccToMapping.get(midiNumber) : undefined);
 
     if (!lookupEntry) {
-      // CC is not mapped - ignore it
       return null;
     }
 
@@ -153,7 +236,7 @@ export class MappingEngine extends EventEmitter {
     let buttonState: boolean | undefined;
 
     if (isButton) {
-      const processedButton = this.processButtonInput(cc, value, behavior);
+      const processedButton = this.processButtonInput(compositeKey, value, behavior);
       if (processedButton === null) {
         // Button input should be ignored (e.g., release on toggle button)
         return null;
@@ -163,7 +246,7 @@ export class MappingEngine extends EventEmitter {
     }
 
     const processedMessage: ProcessedMessage = {
-      inputCC: cc,
+      inputCC: midiNumber,
       outputCC: mapping.outputCC,
       channel: mapping.channel,
       value: outputValue,
@@ -171,9 +254,9 @@ export class MappingEngine extends EventEmitter {
       isButton,
       buttonState,
       label: mapping.label,
+      messageType,
     };
 
-    // Emit the processed message
     this.emit('output', processedMessage);
 
     return processedMessage;
@@ -182,28 +265,47 @@ export class MappingEngine extends EventEmitter {
   /**
    * Gets the current state of a toggle button.
    *
+   * Looks up using CC composite key first (backward compat with nK2 code
+   * that calls getButtonState with a raw CC number).
+   *
    * @param inputCC - The input CC number to check
    * @returns True if button is on, false if off or not a tracked button
    */
   getButtonState(inputCC: number): boolean {
-    return this.buttonStates.get(inputCC) ?? false;
+    // Try composite key first (handles both CC and Note lookups)
+    const ccKey = makeLookupKey('cc', inputCC);
+    if (this.buttonStates.has(ccKey)) {
+      return this.buttonStates.get(ccKey) ?? false;
+    }
+    // Fallback: try note key (for devices where buttons are Note-based)
+    const noteKey = makeLookupKey('note', inputCC);
+    return this.buttonStates.get(noteKey) ?? false;
   }
 
   /**
    * Sets the state of a button.
    * Used for external state synchronization (e.g., LED sync).
    *
-   * @param inputCC - The input CC number
+   * @param inputCC - The input CC or Note number
    * @param isOn - The new state
    */
   setButtonState(inputCC: number, isOn: boolean): void {
-    const lookupEntry = this.ccToMapping.get(inputCC);
+    // Find the lookup entry using composite keys
+    const ccKey = makeLookupKey('cc', inputCC);
+    const noteKey = makeLookupKey('note', inputCC);
+    let lookupEntry = this.compositeToMapping.get(ccKey) ?? this.compositeToMapping.get(noteKey);
+
+    // Fallback to legacy numeric map
+    if (!lookupEntry) {
+      lookupEntry = this.ccToMapping.get(inputCC);
+    }
     if (!lookupEntry?.isButton) {
       return;
     }
 
-    const previousState = this.buttonStates.get(inputCC) ?? false;
-    this.buttonStates.set(inputCC, isOn);
+    const stateKey = makeLookupKey(lookupEntry.messageType, inputCC);
+    const previousState = this.buttonStates.get(stateKey) ?? false;
+    this.buttonStates.set(stateKey, isOn);
 
     if (previousState !== isOn) {
       const event: ButtonStateChangeEvent = {
@@ -220,13 +322,13 @@ export class MappingEngine extends EventEmitter {
    * Useful when reconnecting to ensure consistent state.
    */
   resetButtonStates(): void {
-    for (const [cc, wasOn] of this.buttonStates) {
+    for (const [compositeKey, wasOn] of this.buttonStates) {
       if (wasOn) {
-        this.buttonStates.set(cc, false);
-        const lookupEntry = this.ccToMapping.get(cc);
+        this.buttonStates.set(compositeKey, false);
+        const lookupEntry = this.compositeToMapping.get(compositeKey);
         if (lookupEntry) {
           const event: ButtonStateChangeEvent = {
-            cc,
+            cc: lookupEntry.mapping.inputCC,
             isOn: false,
             controlType: lookupEntry.controlType,
           };
@@ -239,14 +341,29 @@ export class MappingEngine extends EventEmitter {
   /**
    * Gets all button CC numbers that have LEDs.
    *
-   * @returns Array of input CC numbers for buttons with LEDs
+   * When a device definition is available, uses its LED definitions
+   * to determine which buttons have LEDs (works for any device).
+   * Without a device definition, falls back to the nK2-specific hasLed() check.
+   *
+   * @returns Array of input CC/Note numbers for buttons with LEDs
    */
   getButtonCCs(): number[] {
     const buttonCCs: number[] = [];
 
-    for (const [cc, entry] of this.ccToMapping) {
-      if (entry.isButton && hasLed(cc)) {
-        buttonCCs.push(cc);
+    if (this.deviceDefinition) {
+      // Use the device definition's LED list for correctness across devices
+      const ledMidiNumbers = new Set(this.deviceDefinition.leds.map((led) => led.midiNumber));
+      for (const [, entry] of this.compositeToMapping) {
+        if (entry.isButton && ledMidiNumbers.has(entry.mapping.inputCC)) {
+          buttonCCs.push(entry.mapping.inputCC);
+        }
+      }
+    } else {
+      // Legacy path: nK2-specific hasLed() check
+      for (const [cc, entry] of this.ccToMapping) {
+        if (entry.isButton && hasLed(cc)) {
+          buttonCCs.push(cc);
+        }
       }
     }
 
@@ -258,20 +375,35 @@ export class MappingEngine extends EventEmitter {
    * Rebuilds the lookup map and preserves button states where possible.
    *
    * @param config - The new mapping configuration
+   * @param deviceDefinition - Optional updated device definition
    */
-  updateConfig(config: MappingConfig): void {
-    // Save current button states for any CCs that still exist
+  updateConfig(config: MappingConfig, deviceDefinition?: DeviceDefinition): void {
+    // Save current button states for any keys that still exist
     const previousStates = new Map(this.buttonStates);
 
     this.config = config;
+    if (deviceDefinition !== undefined) {
+      this.deviceDefinition = deviceDefinition;
+    }
     this.buildLookupMap();
 
-    // Restore button states for CCs that still exist in new config
-    for (const [cc, wasOn] of previousStates) {
-      if (this.ccToMapping.has(cc) && this.ccToMapping.get(cc)?.isButton) {
-        this.buttonStates.set(cc, wasOn);
+    // Restore button states for composite keys that still exist in new config
+    for (const [compositeKey, wasOn] of previousStates) {
+      if (this.compositeToMapping.has(compositeKey) && this.compositeToMapping.get(compositeKey)?.isButton) {
+        this.buttonStates.set(compositeKey, wasOn);
       }
     }
+  }
+
+  /**
+   * Sets the device definition for message-type-aware mapping.
+   * Rebuilds the lookup map to incorporate device-specific message types.
+   *
+   * @param deviceDefinition - The device definition to use
+   */
+  setDeviceDefinition(deviceDefinition: DeviceDefinition): void {
+    this.deviceDefinition = deviceDefinition;
+    this.buildLookupMap();
   }
 
   /**
@@ -286,10 +418,10 @@ export class MappingEngine extends EventEmitter {
   /**
    * Gets the total number of mapped controls.
    *
-   * @returns Number of CC mappings
+   * @returns Number of mapped controls (CC + Note)
    */
   getMappingCount(): number {
-    return this.ccToMapping.size;
+    return this.compositeToMapping.size || this.ccToMapping.size;
   }
 
   // ===========================================================================
@@ -297,12 +429,20 @@ export class MappingEngine extends EventEmitter {
   // ===========================================================================
 
   /**
-   * Builds the fast lookup map from the configuration.
-   * Creates O(1) lookup from input CC to mapping info.
+   * Builds the fast lookup maps from the configuration.
+   *
+   * Populates both the legacy numeric ccToMapping (for backward compat)
+   * and the new compositeToMapping (for CC/Note disambiguation).
+   * When a device definition is available, uses each control's declared
+   * messageType. Otherwise defaults to 'cc' for all controls.
    */
   private buildLookupMap(): void {
     this.ccToMapping.clear();
+    this.compositeToMapping.clear();
     this.buttonStates.clear();
+
+    // Build a lookup from device definition for per-control message types
+    const deviceMessageTypes = this.buildDeviceMessageTypeMap();
 
     // Process track mappings
     for (let trackIndex = 0; trackIndex < this.config.tracks.length; trackIndex++) {
@@ -310,17 +450,77 @@ export class MappingEngine extends EventEmitter {
       if (!track) continue;
 
       const trackNumber = trackIndex + 1;
-      this.addTrackMappings(track, trackNumber);
+      this.addTrackMappings(track, trackNumber, deviceMessageTypes);
     }
 
     // Process transport mappings
-    this.addTransportMappings(this.config.transport);
+    this.addTransportMappings(this.config.transport, deviceMessageTypes);
   }
 
   /**
-   * Adds all mappings from a track to the lookup map.
+   * Builds a map from control identifier to its MIDI message type
+   * using the device definition. Returns an empty map when no device
+   * definition is available, causing all controls to default to 'cc'.
    */
-  private addTrackMappings(track: TrackMapping, trackNumber: number): void {
+  private buildDeviceMessageTypeMap(): Map<string, MidiMessageType> {
+    const messageTypes = new Map<string, MidiMessageType>();
+
+    if (!this.deviceDefinition) {
+      return messageTypes;
+    }
+
+    // Collect message types from track layouts
+    for (let trackIndex = 0; trackIndex < this.deviceDefinition.trackLayouts.length; trackIndex++) {
+      const layout = this.deviceDefinition.trackLayouts[trackIndex];
+      if (!layout) continue;
+      const trackNumber = trackIndex + 1;
+
+      for (const control of layout.continuousControls) {
+        messageTypes.set(`track${trackNumber}.${control.name}`, control.messageType);
+      }
+      for (const button of layout.buttonControls) {
+        messageTypes.set(`track${trackNumber}.${button.name}`, button.messageType);
+      }
+    }
+
+    // Collect message types from extra sections
+    for (const section of this.deviceDefinition.extraSections) {
+      for (const control of section.controls) {
+        messageTypes.set(`${section.name}.${control.name}`, control.messageType);
+      }
+    }
+
+    return messageTypes;
+  }
+
+  /**
+   * Registers a single mapping entry into both lookup maps.
+   */
+  private registerLookupEntry(
+    midiNumber: number,
+    messageType: MidiMessageType,
+    entry: MappingLookupEntry
+  ): void {
+    const compositeKey = makeLookupKey(messageType, midiNumber);
+    this.compositeToMapping.set(compositeKey, entry);
+
+    // Also register in legacy numeric map for backward compat
+    this.ccToMapping.set(midiNumber, entry);
+
+    // Initialize button state using composite key
+    if (entry.isButton) {
+      this.buttonStates.set(compositeKey, false);
+    }
+  }
+
+  /**
+   * Adds all mappings from a track to the lookup maps.
+   */
+  private addTrackMappings(
+    track: TrackMapping,
+    trackNumber: number,
+    deviceMessageTypes: Map<string, MidiMessageType>
+  ): void {
     const controlTypes: ControlType[] = ['knob', 'slider', 'solo', 'mute', 'rec'];
 
     for (const controlType of controlTypes) {
@@ -328,24 +528,30 @@ export class MappingEngine extends EventEmitter {
       const isButton = !isContinuousControl(controlType);
       const fullControlType = `track${trackNumber}.${controlType}`;
 
-      this.ccToMapping.set(mapping.inputCC, {
+      // Determine message type: mapping entry > device definition > default 'cc'
+      const messageType = mapping.messageType
+        ?? deviceMessageTypes.get(fullControlType)
+        ?? 'cc';
+
+      const entry: MappingLookupEntry = {
         mapping,
         controlType: fullControlType,
         isButton,
         behavior: mapping.behavior,
-      });
+        messageType,
+      };
 
-      // Initialize button state to off
-      if (isButton) {
-        this.buttonStates.set(mapping.inputCC, false);
-      }
+      this.registerLookupEntry(mapping.inputCC, messageType, entry);
     }
   }
 
   /**
-   * Adds all transport mappings to the lookup map.
+   * Adds all transport mappings to the lookup maps.
    */
-  private addTransportMappings(transport: TransportMapping): void {
+  private addTransportMappings(
+    transport: TransportMapping,
+    deviceMessageTypes: Map<string, MidiMessageType>
+  ): void {
     const transportControls: TransportControlType[] = [
       'rewind', 'forward', 'stop', 'play', 'record', 'cycle',
       'track_left', 'track_right', 'marker_set', 'marker_left', 'marker_right',
@@ -355,16 +561,20 @@ export class MappingEngine extends EventEmitter {
       const mapping = transport[controlType];
       const fullControlType = `transport.${controlType}`;
 
-      // All transport controls are buttons
-      this.ccToMapping.set(mapping.inputCC, {
+      // Determine message type: mapping entry > device definition > default 'cc'
+      const messageType = mapping.messageType
+        ?? deviceMessageTypes.get(fullControlType)
+        ?? 'cc';
+
+      const entry: MappingLookupEntry = {
         mapping,
         controlType: fullControlType,
         isButton: true,
         behavior: mapping.behavior,
-      });
+        messageType,
+      };
 
-      // Initialize button state to off
-      this.buttonStates.set(mapping.inputCC, false);
+      this.registerLookupEntry(mapping.inputCC, messageType, entry);
     }
   }
 
@@ -374,13 +584,13 @@ export class MappingEngine extends EventEmitter {
    * Toggle buttons: On value >= 64, flip state and output 127 or 0
    * Momentary buttons: Pass through value (127 on press, 0 on release)
    *
-   * @param cc - Button CC number
+   * @param compositeKey - Composite lookup key (e.g., "cc:32" or "note:1")
    * @param value - Input value (0-127)
    * @param behavior - Button behavior mode
    * @returns Processed value and state, or null if input should be ignored
    */
   private processButtonInput(
-    cc: number,
+    compositeKey: string,
     value: number,
     behavior: ButtonBehavior | undefined
   ): { outputValue: number; buttonState: boolean } | null {
@@ -393,15 +603,15 @@ export class MappingEngine extends EventEmitter {
       }
 
       // Flip the state
-      const currentState = this.buttonStates.get(cc) ?? false;
+      const currentState = this.buttonStates.get(compositeKey) ?? false;
       const newState = !currentState;
-      this.buttonStates.set(cc, newState);
+      this.buttonStates.set(compositeKey, newState);
 
       // Emit state change event
-      const lookupEntry = this.ccToMapping.get(cc);
+      const lookupEntry = this.compositeToMapping.get(compositeKey);
       if (lookupEntry) {
         const event: ButtonStateChangeEvent = {
-          cc,
+          cc: lookupEntry.mapping.inputCC,
           isOn: newState,
           controlType: lookupEntry.controlType,
         };
@@ -419,13 +629,13 @@ export class MappingEngine extends EventEmitter {
     const buttonState = isPress;
 
     // Update button state (for LED tracking on momentary buttons)
-    this.buttonStates.set(cc, buttonState);
+    this.buttonStates.set(compositeKey, buttonState);
 
     // Emit state change for momentary buttons too (for LED feedback)
-    const lookupEntry = this.ccToMapping.get(cc);
+    const lookupEntry = this.compositeToMapping.get(compositeKey);
     if (lookupEntry) {
       const event: ButtonStateChangeEvent = {
-        cc,
+        cc: lookupEntry.mapping.inputCC,
         isOn: buttonState,
         controlType: lookupEntry.controlType,
       };

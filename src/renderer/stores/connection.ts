@@ -2,6 +2,16 @@
  * Connection Store
  *
  * Manages MIDI connection state and operations.
+ *
+ * Multi-device support:
+ * The existing single-device connection state is preserved for backward
+ * compatibility. Additional helpers are provided for routing incoming MIDI
+ * events to the correct device instance and for managing per-device
+ * connection lifecycle when the devices store is available.
+ *
+ * The routeMidiEventToDevice helper inspects the MIDI port name from an
+ * incoming event and matches it against registered device instances to
+ * determine which device should receive the event.
  */
 
 import { create } from 'zustand';
@@ -16,8 +26,11 @@ const getElectronAPI = (): ElectronAPI | null => {
 // Store Types
 // =============================================================================
 
+/** Mapping from MIDI port name to the device instanceId that owns it */
+type PortToDeviceMap = Map<string, string>;
+
 interface ConnectionState {
-  // State
+  // Legacy single-device state
   connected: boolean;
   connecting: boolean;
   inputPort: string | null;
@@ -29,11 +42,50 @@ interface ConnectionState {
     outputs: string[];
   };
 
-  // Actions
+  // Multi-device routing
+  /** Maps input port names to their owning device instanceId */
+  portDeviceMap: PortToDeviceMap;
+
+  // Legacy actions
   initialize: () => Promise<void>;
   connect: (inputPort?: string, outputPort?: string) => Promise<boolean>;
   disconnect: () => Promise<void>;
   refreshPorts: () => Promise<void>;
+
+  // Multi-device actions
+
+  /**
+   * Registers an input port as belonging to a specific device instance.
+   * Used by the device lifecycle to claim ownership of a MIDI port.
+   *
+   * @param inputPort - The MIDI input port name
+   * @param instanceId - The device instance that owns this port
+   */
+  registerPortForDevice: (inputPort: string, instanceId: string) => void;
+
+  /**
+   * Removes a port-to-device mapping.
+   * Should be called when a device disconnects or is removed.
+   *
+   * @param inputPort - The MIDI input port name to unregister
+   */
+  unregisterPort: (inputPort: string) => void;
+
+  /**
+   * Looks up which device instance owns a given MIDI input port.
+   * Returns the instanceId, or null if no device is registered for that port.
+   *
+   * @param inputPort - The MIDI input port name to look up
+   */
+  getDeviceForPort: (inputPort: string) => string | null;
+
+  /**
+   * Removes all port mappings for a specific device instance.
+   * Called during device removal to clean up all port associations.
+   *
+   * @param instanceId - The device instance being removed
+   */
+  unregisterAllPortsForDevice: (instanceId: string) => void;
 }
 
 // =============================================================================
@@ -49,6 +101,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   virtualPort: 'nkEditor3 Out',
   midiAvailable: false,
   availablePorts: { inputs: [], outputs: [] },
+  portDeviceMap: new Map(),
 
   // Initialize connection and set up event listeners
   initialize: async () => {
@@ -168,5 +221,41 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     } catch (error) {
       console.error('[connection] Failed to refresh ports:', error);
     }
+  },
+
+  // =========================================================================
+  // Multi-device routing
+  // =========================================================================
+
+  registerPortForDevice: (inputPort, instanceId) => {
+    set((state) => {
+      const newMap = new Map(state.portDeviceMap);
+      newMap.set(inputPort, instanceId);
+      return { portDeviceMap: newMap };
+    });
+  },
+
+  unregisterPort: (inputPort) => {
+    set((state) => {
+      const newMap = new Map(state.portDeviceMap);
+      newMap.delete(inputPort);
+      return { portDeviceMap: newMap };
+    });
+  },
+
+  getDeviceForPort: (inputPort) => {
+    return get().portDeviceMap.get(inputPort) ?? null;
+  },
+
+  unregisterAllPortsForDevice: (instanceId) => {
+    set((state) => {
+      const newMap = new Map(state.portDeviceMap);
+      for (const [port, deviceId] of newMap) {
+        if (deviceId === instanceId) {
+          newMap.delete(port);
+        }
+      }
+      return { portDeviceMap: newMap };
+    });
   },
 }));

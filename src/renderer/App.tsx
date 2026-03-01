@@ -8,6 +8,8 @@
 import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { EditorView } from './components/Editor/EditorView';
+import { DeviceEditorContainer } from './components/Editor/DeviceEditorContainer';
+import { DeviceTabBar } from './components/DeviceTabBar';
 import { LibrarianView } from './components/Librarian/LibrarianView';
 import { SettingsView } from './components/Settings/SettingsView';
 import { HelpView } from './components/Help/HelpView';
@@ -15,6 +17,7 @@ import { useConnectionStore } from './stores/connection';
 import { useSettingsStore } from './stores/settings';
 import { useControlsStore } from './stores/controls';
 import { usePresetStore } from './stores/preset';
+import { useDevicesStore } from './stores/devices';
 import { DEFAULT_THEME_COLORS } from '@shared/ipc-protocol';
 import type { ThemeColors } from '@shared/ipc-protocol';
 
@@ -82,6 +85,23 @@ function App(): React.ReactElement {
   // Use split layout on wide screens (>= 1400px)
   const useSplitLayout = windowWidth >= 1400;
 
+  const hasDevices = useDevicesStore((state) => state.devices.size > 0);
+
+  // Determine which editor to show: multi-device container or legacy single editor
+  const showDeviceTabBar = hasDevices && (activeTab === 'editor' || activeTab === 'librarian');
+
+  /**
+   * Renders the appropriate editor content.
+   * When devices are configured, routes through DeviceEditorContainer.
+   * Otherwise, falls back to the legacy single-device EditorView.
+   */
+  const renderEditorContent = () => {
+    if (hasDevices) {
+      return <DeviceEditorContainer />;
+    }
+    return <EditorView />;
+  };
+
   return (
     <div className="h-screen flex flex-col bg-nk-darker">
       {/* Header with connection status and navigation - always show tabs */}
@@ -90,6 +110,9 @@ function App(): React.ReactElement {
         onTabChange={setActiveTab}
         showTabs={true}
       />
+
+      {/* Device tab bar - visible when devices exist and on editor/librarian views */}
+      {showDeviceTabBar && <DeviceTabBar />}
 
       {/* Main content area */}
       <main className="flex-1 overflow-hidden">
@@ -106,7 +129,7 @@ function App(): React.ReactElement {
           // Split layout: Editor left, Librarian right
           <div className="h-full flex">
             <div className="flex-1 border-r border-nk-border overflow-auto">
-              <EditorView />
+              {renderEditorContent()}
             </div>
             <div className="w-96 overflow-auto">
               <LibrarianView compact />
@@ -115,7 +138,7 @@ function App(): React.ReactElement {
         ) : (
           // Tabbed layout for Editor and Librarian
           <div className="h-full overflow-auto">
-            {activeTab === 'editor' && <EditorView />}
+            {activeTab === 'editor' && renderEditorContent()}
             {activeTab === 'librarian' && <LibrarianView />}
           </div>
         )}

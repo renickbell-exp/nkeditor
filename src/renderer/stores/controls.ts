@@ -1,13 +1,23 @@
 /**
  * Controls Store
  *
- * Manages the state of all controls (knobs, sliders, buttons) on the nanoKONTROL2.
+ * Manages the state of all controls (knobs, sliders, buttons) across multiple
+ * device instances. Each device instance has its own isolated control state,
+ * keyed by instanceId from the devices store.
+ *
+ * Backward Compatibility:
+ * The original single-device interface (tracks, transport, updateControl, etc.)
+ * is preserved and delegates to a "default" device instance. This allows existing
+ * UI components to continue working unchanged during the multi-device transition.
+ * The default device is either the active device from the devices store, or a
+ * built-in fallback state that matches the original nK2-only behavior.
  */
 
 import { create } from 'zustand';
 import type { ElectronAPI } from '../../main/preload';
 import type { ControlValues } from '@shared/ipc-protocol';
 import type { MappingConfig, MappingEntry } from '@shared/types';
+import type { DeviceDefinition } from '@shared/devices';
 
 // Get the electron API from window
 const getElectronAPI = (): ElectronAPI | null => {
@@ -47,7 +57,36 @@ function getButtonMidiValue(active: boolean, mapping?: MappingEntry): number {
 }
 
 // =============================================================================
-// Store Types
+// Generic Multi-Device Control Types
+// =============================================================================
+
+/**
+ * A single control's value and metadata within the generic per-device state.
+ * Used for both continuous controls (knobs/sliders/faders) and buttons.
+ */
+export interface GenericControlValue {
+  /** Numeric value (0-127 for continuous, 0 or 1 for buttons) */
+  value: number;
+  /** Whether this control is in its "active" state (only meaningful for buttons) */
+  active?: boolean;
+  /** User-facing label for this control */
+  label?: string;
+}
+
+/**
+ * The complete control state for one device instance.
+ * Tracks are indexed arrays (one entry per hardware track/channel strip).
+ * Sections hold controls outside the track layout (transport, master, etc.).
+ */
+export interface DeviceControlState {
+  /** Per-track control values. Each record maps control name -> value. */
+  tracks: Array<Record<string, GenericControlValue>>;
+  /** Named sections of non-track controls (e.g., { transport: { play: {...} } }) */
+  sections: Record<string, Record<string, GenericControlValue>>;
+}
+
+// =============================================================================
+// Legacy Single-Device Types (backward compat)
 // =============================================================================
 
 interface ControlState {
@@ -89,82 +128,109 @@ interface TrackSelectionState {
   slider: boolean;
 }
 
+// =============================================================================
+// Store Interface
+// =============================================================================
+
 interface ControlsStoreState {
-  // State
+  // =========================================================================
+  // Multi-device state (new)
+  // =========================================================================
+
+  /** Per-device control state keyed by instanceId */
+  deviceControls: Map<string, DeviceControlState>;
+
+  /**
+   * Initializes control state for a device instance based on its hardware definition.
+   * Creates tracks with the correct number and names of controls for the device type.
+   */
+  initializeDevice: (instanceId: string, deviceDef: DeviceDefinition) => void;
+
+  /**
+   * Updates a continuous control value on a specific device's track.
+   * @param instanceId - Device instance ID
+   * @param trackIndex - Zero-based track index
+   * @param controlName - Control name within the track (e.g., 'knob', 'knob1', 'fader')
+   * @param value - New value (0-127)
+   */
+  updateDeviceControl: (instanceId: string, trackIndex: number, controlName: string, value: number) => void;
+
+  /**
+   * Updates a button's active state on a specific device's track.
+   * @param instanceId - Device instance ID
+   * @param trackIndex - Zero-based track index
+   * @param controlName - Button name (e.g., 'solo', 'mute', 'rec')
+   * @param active - Whether the button is active
+   */
+  updateDeviceButton: (instanceId: string, trackIndex: number, controlName: string, active: boolean) => void;
+
+  /**
+   * Updates a continuous control value in a device's non-track section.
+   * @param instanceId - Device instance ID
+   * @param sectionName - Section name (e.g., 'transport', 'master')
+   * @param controlName - Control name within the section
+   * @param value - New value (0-127)
+   */
+  updateSectionControl: (instanceId: string, sectionName: string, controlName: string, value: number) => void;
+
+  /**
+   * Updates a button's active state in a device's non-track section.
+   * @param instanceId - Device instance ID
+   * @param sectionName - Section name (e.g., 'transport', 'master')
+   * @param controlName - Button name within the section
+   * @param active - Whether the button is active
+   */
+  updateSectionButton: (instanceId: string, sectionName: string, controlName: string, active: boolean) => void;
+
+  /**
+   * Returns the control state for a specific device instance.
+   * @returns The device's control state, or undefined if the instance is not initialized
+   */
+  getDeviceState: (instanceId: string) => DeviceControlState | undefined;
+
+  /**
+   * Removes all control state for a device instance.
+   * Should be called when a device instance is removed.
+   */
+  removeDeviceState: (instanceId: string) => void;
+
+  /**
+   * Applies labels from a mapping to a device's controls.
+   * Generalized version of applyLabelsFromMapping for any device type.
+   */
+  applyDeviceLabels: (instanceId: string, labels: Array<{ trackIndex: number; controlName: string; label: string }>, sectionLabels?: Array<{ sectionName: string; controlName: string; label: string }>) => void;
+
+  // =========================================================================
+  // Legacy single-device interface (backward compat)
+  // =========================================================================
+
+  /** Legacy: 8-track nK2 state. Delegates to the default device or built-in fallback. */
   tracks: TrackState[];
+  /** Legacy: transport state. Delegates to the default device or built-in fallback. */
   transport: TransportState;
   /** Selection state for each track's knob and slider */
   selections: TrackSelectionState[];
 
-  // Actions
+  // Legacy actions
   initialize: () => void;
   updateControl: (controlId: string, value: number) => void;
   updateButton: (controlId: string, active: boolean) => void;
   setControlLabel: (controlId: string, label: string) => void;
   resetAllControls: () => void;
-  /**
-   * Applies control values and labels from a preset.
-   * Updates the GUI state FIRST, then sends MIDI CC messages to the synth.
-   * GUI update is guaranteed even if MIDI transmission fails.
-   *
-   * @param controlValues - The control values to apply
-   * @param mapping - The mapping configuration with labels and CC assignments
-   * @param transmitButtons - If false, skip MIDI sends for buttons (solo, mute, rec, transport). Default: true
-   */
   applyPresetValues: (controlValues: ControlValues, mapping: MappingConfig, transmitButtons?: boolean) => Promise<void>;
-  /**
-   * Captures current control values into a ControlValues object for saving.
-   */
   captureControlValues: () => ControlValues;
-  /**
-   * Applies labels from a mapping configuration to all controls.
-   */
   applyLabelsFromMapping: (mapping: MappingConfig) => void;
-  /**
-   * Randomizes all knob and slider values (0-127) for all 8 tracks.
-   * Updates the GUI state FIRST, then sends MIDI CC messages.
-   * Does NOT randomize button states (solo, mute, rec, transport).
-   *
-   * @param mapping - The mapping configuration with CC assignments for MIDI output
-   */
   randomizeKnobsAndSliders: (mapping: MappingConfig) => Promise<void>;
-  /**
-   * Randomizes only selected knob and slider values.
-   * If no controls are selected, does nothing.
-   *
-   * @param mapping - The mapping configuration with CC assignments for MIDI output
-   */
   randomizeSelectedKnobsAndSliders: (mapping: MappingConfig) => Promise<void>;
-  /**
-   * Restores control values from a snapshot (used by undo).
-   * Updates GUI state and sends MIDI CC messages.
-   *
-   * @param controlValues - The control values to restore
-   * @param mapping - The mapping configuration with CC assignments for MIDI output
-   */
   restoreFromControlValues: (controlValues: ControlValues, mapping: MappingConfig) => Promise<void>;
-  /**
-   * Toggles selection state for a specific control.
-   * @param trackIndex - Track index (0-7)
-   * @param controlType - 'knob' or 'slider'
-   */
   toggleControlSelection: (trackIndex: number, controlType: 'knob' | 'slider') => void;
-  /**
-   * Selects all knobs and sliders.
-   */
   selectAllControls: () => void;
-  /**
-   * Deselects all knobs and sliders.
-   */
   deselectAllControls: () => void;
-  /**
-   * Gets the count of selected controls.
-   */
   getSelectedCount: () => number;
 }
 
 // =============================================================================
-// Default State
+// Default State Factories
 // =============================================================================
 
 function createDefaultTrack(): TrackState {
@@ -200,12 +266,230 @@ function createDefaultSelections(): TrackSelectionState[] {
   }));
 }
 
+/**
+ * Builds the initial generic control state for a device from its hardware definition.
+ * Each track gets entries for all its continuous and button controls.
+ * Each extra section gets entries for all its controls.
+ */
+function buildInitialDeviceState(deviceDef: DeviceDefinition): DeviceControlState {
+  const tracks: Array<Record<string, GenericControlValue>> = [];
+
+  for (let trackIndex = 0; trackIndex < deviceDef.trackCount; trackIndex++) {
+    const layout = deviceDef.trackLayouts[trackIndex];
+    if (!layout) {
+      tracks.push({});
+      continue;
+    }
+
+    const trackControls: Record<string, GenericControlValue> = {};
+
+    for (const control of layout.continuousControls) {
+      trackControls[control.name] = { value: 0 };
+    }
+
+    for (const button of layout.buttonControls) {
+      trackControls[button.name] = { value: 0, active: false };
+    }
+
+    tracks.push(trackControls);
+  }
+
+  const sections: Record<string, Record<string, GenericControlValue>> = {};
+
+  for (const section of deviceDef.extraSections) {
+    const sectionControls: Record<string, GenericControlValue> = {};
+
+    for (const control of section.controls) {
+      if (control.kind === 'button') {
+        sectionControls[control.name] = { value: 0, active: false };
+      } else {
+        sectionControls[control.name] = { value: 0 };
+      }
+    }
+
+    sections[section.name] = sectionControls;
+  }
+
+  return { tracks, sections };
+}
+
 // =============================================================================
 // Store Implementation
 // =============================================================================
 
 export const useControlsStore = create<ControlsStoreState>((set, get) => ({
-  // Initial state
+  // =========================================================================
+  // Multi-device state
+  // =========================================================================
+
+  deviceControls: new Map(),
+
+  initializeDevice: (instanceId, deviceDef) => {
+    const initialState = buildInitialDeviceState(deviceDef);
+
+    set((state) => {
+      const newDeviceControls = new Map(state.deviceControls);
+      newDeviceControls.set(instanceId, initialState);
+      return { deviceControls: newDeviceControls };
+    });
+  },
+
+  updateDeviceControl: (instanceId, trackIndex, controlName, value) => {
+    set((state) => {
+      const deviceState = state.deviceControls.get(instanceId);
+      if (!deviceState) return state;
+
+      const track = deviceState.tracks[trackIndex];
+      if (!track) return state;
+
+      const existingControl = track[controlName];
+      if (!existingControl) return state;
+
+      const newTracks = [...deviceState.tracks];
+      newTracks[trackIndex] = {
+        ...track,
+        [controlName]: { ...existingControl, value },
+      };
+
+      const newDeviceControls = new Map(state.deviceControls);
+      newDeviceControls.set(instanceId, { ...deviceState, tracks: newTracks });
+      return { deviceControls: newDeviceControls };
+    });
+  },
+
+  updateDeviceButton: (instanceId, trackIndex, controlName, active) => {
+    set((state) => {
+      const deviceState = state.deviceControls.get(instanceId);
+      if (!deviceState) return state;
+
+      const track = deviceState.tracks[trackIndex];
+      if (!track) return state;
+
+      const existingControl = track[controlName];
+      if (!existingControl) return state;
+
+      const newTracks = [...deviceState.tracks];
+      newTracks[trackIndex] = {
+        ...track,
+        [controlName]: { ...existingControl, active, value: active ? 127 : 0 },
+      };
+
+      const newDeviceControls = new Map(state.deviceControls);
+      newDeviceControls.set(instanceId, { ...deviceState, tracks: newTracks });
+      return { deviceControls: newDeviceControls };
+    });
+  },
+
+  updateSectionControl: (instanceId, sectionName, controlName, value) => {
+    set((state) => {
+      const deviceState = state.deviceControls.get(instanceId);
+      if (!deviceState) return state;
+
+      const section = deviceState.sections[sectionName];
+      if (!section) return state;
+
+      const existingControl = section[controlName];
+      if (!existingControl) return state;
+
+      const newSections = {
+        ...deviceState.sections,
+        [sectionName]: {
+          ...section,
+          [controlName]: { ...existingControl, value },
+        },
+      };
+
+      const newDeviceControls = new Map(state.deviceControls);
+      newDeviceControls.set(instanceId, { ...deviceState, sections: newSections });
+      return { deviceControls: newDeviceControls };
+    });
+  },
+
+  updateSectionButton: (instanceId, sectionName, controlName, active) => {
+    set((state) => {
+      const deviceState = state.deviceControls.get(instanceId);
+      if (!deviceState) return state;
+
+      const section = deviceState.sections[sectionName];
+      if (!section) return state;
+
+      const existingControl = section[controlName];
+      if (!existingControl) return state;
+
+      const newSections = {
+        ...deviceState.sections,
+        [sectionName]: {
+          ...section,
+          [controlName]: { ...existingControl, active, value: active ? 127 : 0 },
+        },
+      };
+
+      const newDeviceControls = new Map(state.deviceControls);
+      newDeviceControls.set(instanceId, { ...deviceState, sections: newSections });
+      return { deviceControls: newDeviceControls };
+    });
+  },
+
+  getDeviceState: (instanceId) => {
+    return get().deviceControls.get(instanceId);
+  },
+
+  removeDeviceState: (instanceId) => {
+    set((state) => {
+      const newDeviceControls = new Map(state.deviceControls);
+      newDeviceControls.delete(instanceId);
+      return { deviceControls: newDeviceControls };
+    });
+  },
+
+  applyDeviceLabels: (instanceId, labels, sectionLabels) => {
+    set((state) => {
+      const deviceState = state.deviceControls.get(instanceId);
+      if (!deviceState) return state;
+
+      const newTracks = [...deviceState.tracks];
+
+      for (const { trackIndex, controlName, label } of labels) {
+        const track = newTracks[trackIndex];
+        if (!track) continue;
+
+        const existingControl = track[controlName];
+        if (!existingControl) continue;
+
+        newTracks[trackIndex] = {
+          ...track,
+          [controlName]: { ...existingControl, label },
+        };
+      }
+
+      let newSections = deviceState.sections;
+
+      if (sectionLabels && sectionLabels.length > 0) {
+        newSections = { ...deviceState.sections };
+        for (const { sectionName, controlName, label } of sectionLabels) {
+          const section = newSections[sectionName];
+          if (!section) continue;
+
+          const existingControl = section[controlName];
+          if (!existingControl) continue;
+
+          newSections[sectionName] = {
+            ...section,
+            [controlName]: { ...existingControl, label },
+          };
+        }
+      }
+
+      const newDeviceControls = new Map(state.deviceControls);
+      newDeviceControls.set(instanceId, { tracks: newTracks, sections: newSections });
+      return { deviceControls: newDeviceControls };
+    });
+  },
+
+  // =========================================================================
+  // Legacy single-device state and actions (backward compat)
+  // =========================================================================
+
   tracks: Array(8).fill(null).map(() => createDefaultTrack()),
   transport: createDefaultTransport(),
   selections: createDefaultSelections(),

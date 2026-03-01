@@ -43,6 +43,7 @@ import {
 import type {
   MidiHandlerOptions,
   CCMessage,
+  NoteMessage,
   MidiPorts,
   ConnectedEvent,
   DisconnectedEvent,
@@ -377,6 +378,47 @@ export class MidiHandler extends EventEmitter {
   }
 
   /**
+   * Sends a Note On message to the hardware output port for LED control.
+   *
+   * Some devices (e.g., Akai MidiMix) use Note messages instead of CC
+   * messages to control their LEDs.
+   *
+   * @param channel - MIDI channel (0-indexed for easymidi)
+   * @param note - Note number for the LED (0-127)
+   * @param velocity - LED brightness/state: 127 for on, 0 for off
+   *
+   * @example
+   * // Turn on MidiMix Mute LED for track 1 (Note 1)
+   * handler.sendLedNote(0, 1, 127);
+   *
+   * // Turn off the LED
+   * handler.sendLedNote(0, 1, 0);
+   */
+  sendLedNote(channel: number, note: number, velocity: number): void {
+    if (!this.output) {
+      this.emitError('Cannot send LED Note: Hardware output port not connected');
+      return;
+    }
+
+    const clampedChannel = clampValue(channel, 0, 15);
+    const clampedNote = clampValue(note, 0, 127);
+    const clampedVelocity = clampValue(velocity, 0, 127);
+
+    try {
+      // Use Note On with velocity 0 for off, velocity > 0 for on.
+      // This is the standard convention for LED control via Note messages.
+      this.output.send('noteon', {
+        channel: clampedChannel as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
+        note: clampedNote,
+        velocity: clampedVelocity,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.emitError(`Failed to send LED Note to hardware: ${message}`);
+    }
+  }
+
+  /**
    * Starts polling for device connect/disconnect events.
    *
    * Periodically checks available MIDI ports and compares them to the
@@ -508,6 +550,24 @@ export class MidiHandler extends EventEmitter {
         value: msg.value,
       };
       this.emit('cc', ccMessage);
+    });
+
+    this.input.on('noteon', (msg: { channel: number; note: number; velocity: number }) => {
+      const noteMessage: NoteMessage = {
+        channel: msg.channel,
+        note: msg.note,
+        velocity: msg.velocity,
+      };
+      this.emit('noteon', noteMessage);
+    });
+
+    this.input.on('noteoff', (msg: { channel: number; note: number; velocity: number }) => {
+      const noteMessage: NoteMessage = {
+        channel: msg.channel,
+        note: msg.note,
+        velocity: msg.velocity,
+      };
+      this.emit('noteoff', noteMessage);
     });
   }
 

@@ -6,6 +6,8 @@
 
 import React from 'react';
 import { useConnectionStore } from '../stores/connection';
+import { useDevicesStore } from '../stores/devices';
+import { DeviceSelector } from './DeviceSelector';
 
 interface HeaderProps {
   activeTab: 'editor' | 'librarian' | 'settings' | 'help';
@@ -15,6 +17,7 @@ interface HeaderProps {
 
 export function Header({ activeTab, onTabChange, showTabs }: HeaderProps): React.ReactElement {
   const { connected, inputPort, connecting } = useConnectionStore();
+  const deviceCount = useDevicesStore((state) => state.devices.size);
 
   return (
     <header className="flex items-center justify-between px-4 py-2 bg-nk-dark border-b border-nk-border">
@@ -25,7 +28,7 @@ export function Header({ activeTab, onTabChange, showTabs }: HeaderProps): React
         </div>
         <div>
           <h1 className="text-lg font-semibold text-white">nkEditor3</h1>
-          <p className="text-xs text-gray-500">nanoKONTROL2 MIDI Remapper</p>
+          <p className="text-xs text-gray-500">MIDI CC Remapper</p>
         </div>
       </div>
 
@@ -59,13 +62,16 @@ export function Header({ activeTab, onTabChange, showTabs }: HeaderProps): React
         </nav>
       )}
 
-      {/* Connection status */}
+      {/* Device selector and connection status */}
       <div className="flex items-center gap-3">
-        <ConnectionStatus
-          connected={connected}
-          connecting={connecting}
-          portName={inputPort}
-        />
+        <DeviceSelector />
+        {deviceCount === 0 && (
+          <ConnectionStatus
+            connected={connected}
+            connecting={connecting}
+            portName={inputPort}
+          />
+        )}
       </div>
     </header>
   );

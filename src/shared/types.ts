@@ -2,8 +2,10 @@
  * Core type definitions for the nkEditor3 MIDI CC remapper.
  *
  * These types define the structure of control mappings, configuration,
- * and runtime state for the nanoKONTROL2 controller.
+ * and runtime state for supported MIDI controllers (nanoKONTROL2, Akai MidiMix, etc.).
  */
+
+import type { MidiMessageType } from './devices/device-definition.js';
 
 // =============================================================================
 // Control Type Definitions
@@ -80,6 +82,12 @@ export interface MappingEntry {
   onValue?: number;
   /** CC value sent when button is OFF (default 0) */
   offValue?: number;
+  /**
+   * MIDI message type for this control.
+   * Defaults to 'cc' if omitted, preserving backward compatibility
+   * with nanoKONTROL2 configurations that predate multi-device support.
+   */
+  messageType?: MidiMessageType;
 }
 
 /**
@@ -175,10 +183,27 @@ export interface LedState {
 /**
  * Result of parsing a mapping file.
  * Either contains a valid config or an error message.
+ * When a [device] header is present, deviceId identifies the target device.
+ * When absent, deviceId defaults to 'nanokontrol2' for backward compatibility.
  */
 export type ParseResult =
-  | { success: true; config: MappingConfig }
+  | { success: true; config: MappingConfig; deviceId: string }
   | { success: false; error: string };
+
+/**
+ * Generic mapping configuration for any device.
+ * Unlike MappingConfig (which is nK2-specific with fixed track/transport shape),
+ * DeviceMappingConfig uses dynamic sections keyed by name, allowing arbitrary
+ * device layouts.
+ */
+export interface DeviceMappingConfig {
+  /** Device identifier this mapping was created for */
+  deviceId: string;
+  /** Track mappings indexed by track number (1-based key as string) */
+  tracks: Record<string, Record<string, MappingEntry>>;
+  /** Extra sections (transport, master, etc.) keyed by section name */
+  sections: Record<string, Record<string, MappingEntry>>;
+}
 
 /**
  * A single parsed line from the mapping file.
@@ -308,3 +333,35 @@ export const LED_CC_NUMBERS = [
 export function hasLed(cc: number): boolean {
   return (LED_CC_NUMBERS as readonly number[]).includes(cc);
 }
+
+// =============================================================================
+// Generalized MIDI Message Types (Multi-Device Support)
+// =============================================================================
+
+/**
+ * Represents a MIDI Note On/Off message.
+ * Used by devices like the Akai MidiMix that send Note messages for buttons.
+ */
+export interface NoteMessage {
+  /** MIDI channel (0-indexed for easymidi) */
+  channel: number;
+  /** Note number (0-127) */
+  note: number;
+  /** Velocity (0-127) */
+  velocity: number;
+}
+
+/**
+ * A generic track mapping that uses string keys for control names,
+ * accommodating devices with different control layouts (e.g., MidiMix
+ * has 3 knobs per track vs nK2's 1 knob + 1 slider).
+ */
+export type GenericTrackMapping = Record<string, MappingEntry>;
+
+/**
+ * A generic section mapping for non-track control groups
+ * (transport, master, etc.) keyed by control name.
+ */
+export type GenericSectionMapping = Record<string, MappingEntry>;
+
+// DeviceMappingConfig is defined in the Parser Types section above.

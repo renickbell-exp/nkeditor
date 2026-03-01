@@ -1,15 +1,26 @@
 # nkEditor3
 
-A desktop MIDI CC remapping application for the **Korg nanoKONTROL2** hardware controller. nkEditor3 intercepts MIDI CC messages from the nanoKONTROL2, remaps them according to user-defined presets, and outputs the transformed messages through a virtual MIDI port. This allows complete customization of which CC numbers and MIDI channels each physical control sends, without modifying the hardware itself.
+A desktop MIDI CC remapping application for hardware MIDI controllers. nkEditor3 intercepts MIDI messages from supported controllers, remaps them according to user-defined presets, and outputs the transformed messages through a virtual MIDI port. This allows complete customization of which CC numbers and MIDI channels each physical control sends, without modifying the hardware itself.
 
 Built with Electron, React, and TypeScript.
 
+## Supported Devices
+
+| Device | Manufacturer | Tracks | Controls per Track | Message Types |
+|---|---|---|---|---|
+| **nanoKONTROL2** | Korg | 8 | 1 knob, 1 slider, 3 buttons + transport | CC |
+| **MIDI Mix** | Akai | 8 | 3 knobs, 1 fader, 3 buttons + master | CC (knobs/faders), Note (buttons) |
+
+The architecture supports adding new devices through a device definition system. Each device declares its physical layout, MIDI protocol, LED behavior, and port identification patterns in a self-contained definition module.
+
 ## Features
 
-- **CC Remapping** -- Remap any of the nanoKONTROL2's 51 controls (8 knobs, 8 sliders, 24 buttons, 11 transport controls) to arbitrary output CC numbers and MIDI channels (1-16).
+- **Multi-Device Support** -- Connect and configure multiple MIDI controllers simultaneously. Switch between devices using a tab interface with a device selector dropdown.
+- **Device-Specific Editors** -- Each supported device has a purpose-built visual editor that mirrors its physical layout (e.g., the MidiMix editor shows 3 knob rows per track, while the nK2 editor shows 1 knob + 1 slider).
+- **CC and Note Remapping** -- Remap controls that send CC messages (knobs, sliders, faders) or Note messages (MidiMix buttons) to arbitrary output numbers and MIDI channels (1-16).
 - **Preset System** -- Save, load, duplicate, and organize mapping configurations as presets. Presets store both the CC mapping and the current control values (knob/slider positions, button states).
-- **Factory Presets** -- Ships with five ready-to-use presets: Default (identity pass-through), Synth Lead, Drums, DAW Transport, and DJ Mixer.
-- **Visual Editor** -- Interactive GUI that mirrors the physical nanoKONTROL2 layout. Click any control to edit its output CC, channel, label, value range, and button behavior (toggle/momentary).
+- **Factory Presets** -- Ships with eight ready-to-use presets: five for nanoKONTROL2 (Default, Synth Lead, Drums, DAW Transport, DJ Mixer) and three for Akai MidiMix (Default MidiMix, MidiMix Synth, MidiMix DJ).
+- **Visual Editor** -- Interactive GUI that mirrors the physical controller layout. Click any control to edit its output CC/Note number, MIDI channel, label, value range, and button behavior (toggle/momentary).
 - **Librarian** -- Browse, search, filter (by tags and groups), favorite, rename, and manage your preset library. Supports A/B comparison between two presets.
 - **Quick Access Slots** -- Five configurable slots for instant preset switching.
 - **LED Control** -- Two LED modes: *internal* (LEDs reflect button state) or *external* (LEDs controlled by incoming MIDI from a DAW).
@@ -49,7 +60,7 @@ Built with Electron, React, and TypeScript.
   # Debian / Ubuntu
   sudo apt install libasound2-dev
   ```
-- **A Korg nanoKONTROL2** (optional for development -- the app will run without hardware but MIDI features require the controller)
+- **A supported MIDI controller** (optional for development -- the app will run without hardware but MIDI features require a controller). Currently supported: Korg nanoKONTROL2, Akai MIDI Mix.
 
 ## Installation
 
@@ -113,6 +124,11 @@ nkEditor3/
       ipc-protocol.ts     # IPC channel names and request/response type definitions
       schemas.ts          # Zod validation schemas, factory preset generators
       types.ts            # Core TypeScript type definitions
+      devices/            # Device abstraction layer
+        device-definition.ts  # DeviceDefinition interface and control types
+        registry.ts           # Central device registry with lookup and auto-detection
+        nanokontrol2.ts       # Korg nanoKONTROL2 hardware definition
+        akai-midimix.ts       # Akai MIDI Mix hardware definition
     main/                 # Electron main process
       main.ts             # App lifecycle, window creation
       preload.ts          # Context bridge exposing IPC API to renderer
@@ -167,8 +183,25 @@ nkEditor3/
   dist-electron/          # Built main process output
   release/                # Packaged application output
   tests/
-    config-parser.test.ts # Config parser unit tests
+    config-parser.test.ts     # Config parser unit tests
+    config-preset.test.ts     # Device-aware preset and config tests
+    device-definitions.test.ts # Device definition and registry tests
+    stores.test.ts            # Multi-device Zustand store tests
+    ui-components.test.ts     # UI component routing tests
+    regression.test.ts        # Backward compatibility regression tests
 ```
+
+## Multi-Device Architecture
+
+The application uses a device abstraction layer that decouples MIDI handling from specific hardware implementations.
+
+### Adding a New Device
+
+1. Create a device definition file in `src/shared/devices/` implementing the `DeviceDefinition` interface
+2. Register the device in `src/shared/devices/registry.ts`
+3. Create a device-specific editor component if the control layout differs significantly from existing editors
+4. Add factory presets in `src/shared/schemas.ts`
+5. Add tests in the `tests/` directory
 
 ## Configuration
 
@@ -202,15 +235,16 @@ Presets are stored as individual JSON files in `~/.config/nkeditor3/presets/` (L
 
 ### Getting Started
 
-1. Connect your Korg nanoKONTROL2 via USB.
+1. Connect a supported MIDI controller (nanoKONTROL2, MIDI Mix) via USB.
 2. Launch nkEditor3 (`npm run dev` for development).
-3. The app auto-detects and connects to the nanoKONTROL2 (if auto-connect is enabled).
-4. The "nkEditor3 Out" virtual MIDI port appears in your DAW or synth software -- route it as a MIDI input.
-5. Move controls on the hardware; the GUI updates in real-time and remapped CC messages are sent to the virtual output.
+3. The app auto-detects the controller and connects (if auto-connect is enabled).
+4. Use the device selector dropdown to add additional devices, and switch between them using the tab bar.
+5. The "nkEditor3 Out" virtual MIDI port appears in your DAW or synth software -- route it as a MIDI input.
+6. Move controls on the hardware; the GUI updates in real-time and remapped MIDI messages are sent to the virtual output.
 
 ### Editor Tab
 
-- The editor displays a visual replica of the nanoKONTROL2 with 8 track strips and a transport bar.
+- The editor displays a visual replica of the active controller. Each device has a purpose-built editor layout.
 - **Click any control** to open a popover where you can set the output CC number, MIDI channel, label, button behavior (toggle/momentary), and value range (min/max for knobs/sliders, on/off values for buttons).
 - Use the **Save** button to persist changes to the current preset.
 - **Randomize** knob and slider values (all or selected controls only).

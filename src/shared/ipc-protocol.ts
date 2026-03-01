@@ -14,6 +14,7 @@ import type { MappingConfig, MidiPorts, CCMessage } from './types.js';
 /** Events sent from main to renderer */
 export const IPC_EVENTS = {
   MIDI_CC: 'midi:cc',
+  MIDI_NOTE: 'midi:note',
   MIDI_CONNECTED: 'midi:connected',
   MIDI_DISCONNECTED: 'midi:disconnected',
   MIDI_PORTS_CHANGED: 'midi:portsChanged',
@@ -39,6 +40,9 @@ export const IPC_INVOKE = {
   // Config operations
   CONFIG_GET: 'config:get',
   CONFIG_UPDATE: 'config:update',
+
+  // Device operations
+  DEVICE_LIST: 'device:list',
 } as const;
 
 // =============================================================================
@@ -53,6 +57,24 @@ export interface MidiCCEvent extends CCMessage {
   outputChannel?: number;
   /** Control type identifier */
   controlType?: string;
+}
+
+/** Payload for midi:note event - sent when a Note On/Off is received from hardware */
+export interface MidiNoteEvent {
+  /** MIDI channel (0-indexed for easymidi) */
+  channel: number;
+  /** Note number (0-127) */
+  note: number;
+  /** Velocity (0-127) */
+  velocity: number;
+  /** Whether this is a Note On (true) or Note Off (false) */
+  isNoteOn: boolean;
+  /** Mapped control type identifier, if the note is mapped */
+  controlType?: string;
+  /** Mapped output note number, if remapped */
+  outputNote?: number;
+  /** Mapped output channel (1-indexed), if remapped */
+  outputChannel?: number;
 }
 
 /** Payload for midi:connected event */
@@ -101,9 +123,19 @@ export interface ConnectResponse {
   outputPort?: string;
 }
 
+/** Summary of a discovered MIDI device, safe for IPC serialization */
+export interface DiscoveredDeviceSummary {
+  deviceId: string;
+  deviceName: string;
+  inputPort: string;
+  outputPort: string;
+}
+
 /** Response from get ports request */
 export interface GetPortsResponse extends MidiPorts {
   nanoKontrol2Found: boolean;
+  /** All recognized devices found on available MIDI ports */
+  discoveredDevices?: DiscoveredDeviceSummary[];
 }
 
 /** MIDI connection status */
@@ -113,6 +145,10 @@ export interface MidiStatusResponse {
   outputPort: string | null;
   virtualPort: string;
   midiAvailable: boolean;
+  /** ID of the connected device, if identified */
+  deviceId?: string;
+  /** Human-readable name of the connected device */
+  deviceName?: string;
 }
 
 /** Preset metadata */

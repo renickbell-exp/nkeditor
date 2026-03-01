@@ -17,6 +17,8 @@
 
 import easymidi from 'easymidi';
 import type { MidiPorts, NanoKontrol2Ports } from '@shared/types.js';
+import { identifyDevice } from '@shared/devices/registry.js';
+import type { DeviceDefinition } from '@shared/devices/device-definition.js';
 
 /**
  * Regular expression pattern to match nanoKONTROL2 MIDI ports on Linux.
@@ -341,6 +343,72 @@ function findMatchingPort(portNames: string[]): string | null {
  */
 export function isNanoKontrol2Port(portName: string): boolean {
   return NANOKONTROL2_PATTERN.test(portName);
+}
+
+// =============================================================================
+// Multi-Device Discovery
+// =============================================================================
+
+/**
+ * Represents a recognized MIDI device found on the system,
+ * paired with its input and output port names.
+ */
+export interface DiscoveredDevice {
+  /** The full device definition from the registry */
+  device: DeviceDefinition;
+  /** The system MIDI input port name for this device */
+  inputPort: string;
+  /** The system MIDI output port name for this device */
+  outputPort: string;
+}
+
+/**
+ * Scans available MIDI ports and identifies all recognized devices
+ * by matching port names against the device registry.
+ *
+ * A device is only returned if both an input and output port are found,
+ * since full operation requires bidirectional communication (input for
+ * controls, output for LEDs).
+ *
+ * @returns Array of discovered devices with their port assignments
+ *
+ * @example
+ * const devices = discoverDevices();
+ * for (const { device, inputPort, outputPort } of devices) {
+ *   console.log(`Found ${device.name} on ${inputPort}`);
+ * }
+ */
+export function discoverDevices(): DiscoveredDevice[] {
+  const ports = getAvailablePorts();
+  const discovered: DiscoveredDevice[] = [];
+
+  // Track which devices we've already matched to avoid duplicates
+  const matchedDeviceIds = new Set<string>();
+
+  // Scan input ports for recognized devices
+  for (const inputPortName of ports.inputs) {
+    const device = identifyDevice(inputPortName);
+    if (!device || matchedDeviceIds.has(device.id)) {
+      continue;
+    }
+
+    // Find a matching output port for the same device
+    const outputPortName = ports.outputs.find((outputPort) => {
+      const outputDevice = identifyDevice(outputPort);
+      return outputDevice?.id === device.id;
+    });
+
+    if (outputPortName) {
+      matchedDeviceIds.add(device.id);
+      discovered.push({
+        device,
+        inputPort: inputPortName,
+        outputPort: outputPortName,
+      });
+    }
+  }
+
+  return discovered;
 }
 
 /**
