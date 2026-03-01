@@ -8,6 +8,7 @@
 import React, { useState, useCallback } from 'react';
 import { usePresetStore } from '../../stores/preset';
 import type { PresetMetadata, ControlValues, Preset } from '@shared/ipc-protocol';
+import type { MappingConfig } from '@shared/types';
 import type { ElectronAPI } from '../../../main/preload';
 
 // Get the electron API from window
@@ -276,7 +277,8 @@ function PresetItem({
 
     // Extract from control values first (takes precedence)
     const cv = fullPreset.controlValues;
-    const mapping = fullPreset.mapping;
+    // Label extraction only works with nK2-shaped MappingConfig presets
+    const mapping = fullPreset.mapping as MappingConfig;
 
     for (let i = 0; i < 8; i++) {
       const trackCv = cv?.tracks[i];

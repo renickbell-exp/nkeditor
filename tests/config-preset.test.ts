@@ -17,6 +17,9 @@ import {
   createDefaultMappingConfig,
   createDefaultMappingForDevice,
   createSamplePresets,
+  presetSchema,
+  isDeviceMappingConfig,
+  isMappingConfig,
 } from '../src/shared/schemas.js';
 import type { MappingConfig, DeviceMappingConfig } from '../src/shared/types.js';
 
@@ -326,9 +329,9 @@ describe('createSamplePresets', () => {
     expect(presetNames).toContain('MidiMix DJ');
   });
 
-  it('should have 8 total factory presets (5 nK2 + 3 MidiMix)', () => {
+  it('should have 10 total factory presets (6 nK2 + 4 MidiMix)', () => {
     const presets = createSamplePresets();
-    expect(presets).toHaveLength(8);
+    expect(presets).toHaveLength(10);
   });
 
   it('should have valid metadata on all presets', () => {
@@ -430,6 +433,365 @@ describe('createDefaultMappingConfig', () => {
       expect(track.solo.channel).toBe(1);
       expect(track.mute.channel).toBe(1);
       expect(track.rec.channel).toBe(1);
+    }
+  });
+});
+
+// =============================================================================
+// Nord Drum 2 nK2 Preset
+// =============================================================================
+
+describe('Nord Drum 2 nK2 preset', () => {
+  const presets = createSamplePresets();
+  const nd2Preset = presets.find((p) => p.metadata.name === 'Nord Drum 2');
+
+  it('should exist in sample presets', () => {
+    expect(nd2Preset).toBeDefined();
+  });
+
+  it('should have group "Nord Drum 2"', () => {
+    expect(nd2Preset?.metadata.group).toBe('Nord Drum 2');
+  });
+
+  it('should have correct tags', () => {
+    expect(nd2Preset?.metadata.tags).toContain('factory');
+    expect(nd2Preset?.metadata.tags).toContain('nord-drum-2');
+    expect(nd2Preset?.metadata.tags).toContain('percussion');
+    expect(nd2Preset?.metadata.tags).toContain('synthesizer');
+  });
+
+  it('should be a MappingConfig (not DeviceMappingConfig)', () => {
+    expect(nd2Preset).toBeDefined();
+    if (nd2Preset) {
+      expect(Array.isArray(nd2Preset.mapping.tracks)).toBe(true);
+      expect('deviceId' in nd2Preset.mapping).toBe(false);
+    }
+  });
+
+  it('should have 8 tracks', () => {
+    expect(nd2Preset).toBeDefined();
+    if (nd2Preset && Array.isArray(nd2Preset.mapping.tracks)) {
+      expect(nd2Preset.mapping.tracks).toHaveLength(8);
+    }
+  });
+
+  it('should map pad tracks 0-5 to channels 1-6', () => {
+    expect(nd2Preset).toBeDefined();
+    if (nd2Preset && Array.isArray(nd2Preset.mapping.tracks)) {
+      for (let i = 0; i < 6; i++) {
+        const track = nd2Preset.mapping.tracks[i];
+        expect(track?.knob.channel).toBe(i + 1);
+        expect(track?.slider.channel).toBe(i + 1);
+      }
+    }
+  });
+
+  it('should map FX tracks 6-7 to channel 10', () => {
+    expect(nd2Preset).toBeDefined();
+    if (nd2Preset && Array.isArray(nd2Preset.mapping.tracks)) {
+      const track6 = nd2Preset.mapping.tracks[6];
+      const track7 = nd2Preset.mapping.tracks[7];
+      expect(track6?.knob.channel).toBe(10);
+      expect(track6?.slider.channel).toBe(10);
+      expect(track7?.knob.channel).toBe(10);
+      expect(track7?.slider.channel).toBe(10);
+    }
+  });
+
+  it('should have knobs mapped to Tone Spectra (CC 30) for pad tracks', () => {
+    expect(nd2Preset).toBeDefined();
+    if (nd2Preset && Array.isArray(nd2Preset.mapping.tracks)) {
+      for (let i = 0; i < 6; i++) {
+        expect(nd2Preset.mapping.tracks[i]?.knob.outputCC).toBe(30);
+      }
+    }
+  });
+
+  it('should have sliders mapped to Tone Decay (CC 50) for pad tracks', () => {
+    expect(nd2Preset).toBeDefined();
+    if (nd2Preset && Array.isArray(nd2Preset.mapping.tracks)) {
+      for (let i = 0; i < 6; i++) {
+        expect(nd2Preset.mapping.tracks[i]?.slider.outputCC).toBe(50);
+      }
+    }
+  });
+
+  it('should have FX track 6 mapped to Echo (CC 28 knob, CC 27 slider)', () => {
+    expect(nd2Preset).toBeDefined();
+    if (nd2Preset && Array.isArray(nd2Preset.mapping.tracks)) {
+      const track6 = nd2Preset.mapping.tracks[6];
+      expect(track6?.knob.outputCC).toBe(28);
+      expect(track6?.slider.outputCC).toBe(27);
+    }
+  });
+
+  it('should have FX track 7 mapped to Dist/EQ (CC 23 knob, CC 26 slider)', () => {
+    expect(nd2Preset).toBeDefined();
+    if (nd2Preset && Array.isArray(nd2Preset.mapping.tracks)) {
+      const track7 = nd2Preset.mapping.tracks[7];
+      expect(track7?.knob.outputCC).toBe(23);
+      expect(track7?.slider.outputCC).toBe(26);
+    }
+  });
+
+  it('should have labels on all knobs and sliders', () => {
+    expect(nd2Preset).toBeDefined();
+    if (nd2Preset && Array.isArray(nd2Preset.mapping.tracks)) {
+      for (let i = 0; i < 8; i++) {
+        const track = nd2Preset.mapping.tracks[i];
+        expect(track?.knob.label).toBeTruthy();
+        expect(track?.slider.label).toBeTruthy();
+      }
+    }
+  });
+
+  it('should have solo buttons as momentary', () => {
+    expect(nd2Preset).toBeDefined();
+    if (nd2Preset && Array.isArray(nd2Preset.mapping.tracks)) {
+      for (let i = 0; i < 8; i++) {
+        expect(nd2Preset.mapping.tracks[i]?.solo.behavior).toBe('momentary');
+      }
+    }
+  });
+
+  it('should pass presetSchema validation', () => {
+    expect(nd2Preset).toBeDefined();
+    if (nd2Preset) {
+      expect(() => presetSchema.parse(nd2Preset)).not.toThrow();
+    }
+  });
+});
+
+// =============================================================================
+// MidiMix Nord Drum 2 Preset
+// =============================================================================
+
+describe('MidiMix Nord Drum 2 preset', () => {
+  const presets = createSamplePresets();
+  const mmND2 = presets.find((p) => p.metadata.name === 'MidiMix Nord Drum 2');
+
+  it('should exist in sample presets', () => {
+    expect(mmND2).toBeDefined();
+  });
+
+  it('should have group "Nord Drum 2"', () => {
+    expect(mmND2?.metadata.group).toBe('Nord Drum 2');
+  });
+
+  it('should have correct tags', () => {
+    expect(mmND2?.metadata.tags).toContain('factory');
+    expect(mmND2?.metadata.tags).toContain('nord-drum-2');
+    expect(mmND2?.metadata.tags).toContain('midimix');
+    expect(mmND2?.metadata.tags).toContain('percussion');
+  });
+
+  it('should be a DeviceMappingConfig (has deviceId)', () => {
+    expect(mmND2).toBeDefined();
+    if (mmND2) {
+      expect(isDeviceMappingConfig(mmND2.mapping)).toBe(true);
+    }
+  });
+
+  it('should have deviceId "akai-midimix"', () => {
+    expect(mmND2).toBeDefined();
+    if (mmND2 && isDeviceMappingConfig(mmND2.mapping)) {
+      expect(mmND2.mapping.deviceId).toBe('akai-midimix');
+    }
+  });
+
+  it('should have 8 tracks', () => {
+    expect(mmND2).toBeDefined();
+    if (mmND2 && isDeviceMappingConfig(mmND2.mapping)) {
+      expect(Object.keys(mmND2.mapping.tracks)).toHaveLength(8);
+    }
+  });
+
+  it('should have all 3 knob rows + fader + 3 buttons per pad track', () => {
+    expect(mmND2).toBeDefined();
+    if (mmND2 && isDeviceMappingConfig(mmND2.mapping)) {
+      for (let i = 1; i <= 6; i++) {
+        const track = mmND2.mapping.tracks[String(i)];
+        expect(track).toBeDefined();
+        if (track) {
+          expect('knob1' in track).toBe(true);
+          expect('knob2' in track).toBe(true);
+          expect('knob3' in track).toBe(true);
+          expect('fader' in track).toBe(true);
+          expect('mute' in track).toBe(true);
+          expect('solo' in track).toBe(true);
+          expect('rec_arm' in track).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('should map pad tracks to channels 1-6', () => {
+    expect(mmND2).toBeDefined();
+    if (mmND2 && isDeviceMappingConfig(mmND2.mapping)) {
+      for (let i = 1; i <= 6; i++) {
+        const track = mmND2.mapping.tracks[String(i)];
+        expect(track?.knob1?.channel).toBe(i);
+        expect(track?.knob2?.channel).toBe(i);
+        expect(track?.knob3?.channel).toBe(i);
+        expect(track?.fader?.channel).toBe(i);
+      }
+    }
+  });
+
+  it('should map FX tracks 7-8 to channel 10', () => {
+    expect(mmND2).toBeDefined();
+    if (mmND2 && isDeviceMappingConfig(mmND2.mapping)) {
+      const track7 = mmND2.mapping.tracks['7'];
+      const track8 = mmND2.mapping.tracks['8'];
+      expect(track7?.knob1?.channel).toBe(10);
+      expect(track8?.knob1?.channel).toBe(10);
+      expect(track7?.fader?.channel).toBe(10);
+      expect(track8?.fader?.channel).toBe(10);
+    }
+  });
+
+  it('should map knob1 to Spectra (CC 30) for pad tracks', () => {
+    expect(mmND2).toBeDefined();
+    if (mmND2 && isDeviceMappingConfig(mmND2.mapping)) {
+      for (let i = 1; i <= 6; i++) {
+        expect(mmND2.mapping.tracks[String(i)]?.knob1?.outputCC).toBe(30);
+      }
+    }
+  });
+
+  it('should map knob2 to Noise Filter Freq (CC 14) for pad tracks', () => {
+    expect(mmND2).toBeDefined();
+    if (mmND2 && isDeviceMappingConfig(mmND2.mapping)) {
+      for (let i = 1; i <= 6; i++) {
+        expect(mmND2.mapping.tracks[String(i)]?.knob2?.outputCC).toBe(14);
+      }
+    }
+  });
+
+  it('should map knob3 to Timbre (CC 52) for pad tracks', () => {
+    expect(mmND2).toBeDefined();
+    if (mmND2 && isDeviceMappingConfig(mmND2.mapping)) {
+      for (let i = 1; i <= 6; i++) {
+        expect(mmND2.mapping.tracks[String(i)]?.knob3?.outputCC).toBe(52);
+      }
+    }
+  });
+
+  it('should map faders to Level (CC 7) for pad tracks', () => {
+    expect(mmND2).toBeDefined();
+    if (mmND2 && isDeviceMappingConfig(mmND2.mapping)) {
+      for (let i = 1; i <= 6; i++) {
+        expect(mmND2.mapping.tracks[String(i)]?.fader?.outputCC).toBe(7);
+      }
+    }
+  });
+
+  it('should have buttons with messageType "note"', () => {
+    expect(mmND2).toBeDefined();
+    if (mmND2 && isDeviceMappingConfig(mmND2.mapping)) {
+      for (let i = 1; i <= 8; i++) {
+        const track = mmND2.mapping.tracks[String(i)];
+        expect(track?.mute?.messageType).toBe('note');
+        expect(track?.solo?.messageType).toBe('note');
+        expect(track?.rec_arm?.messageType).toBe('note');
+      }
+    }
+  });
+
+  it('should pass presetSchema validation', () => {
+    expect(mmND2).toBeDefined();
+    if (mmND2) {
+      expect(() => presetSchema.parse(mmND2)).not.toThrow();
+    }
+  });
+});
+
+// =============================================================================
+// Schema Extension Tests (DeviceMappingConfig support)
+// =============================================================================
+
+describe('presetSchema DeviceMappingConfig support', () => {
+  it('should accept a MappingConfig preset', () => {
+    const presets = createSamplePresets();
+    const defaultPreset = presets.find((p) => p.metadata.name === 'Default');
+    expect(defaultPreset).toBeDefined();
+    if (defaultPreset) {
+      expect(() => presetSchema.parse(defaultPreset)).not.toThrow();
+    }
+  });
+
+  it('should accept a DeviceMappingConfig preset', () => {
+    const presets = createSamplePresets();
+    const mmND2 = presets.find((p) => p.metadata.name === 'MidiMix Nord Drum 2');
+    expect(mmND2).toBeDefined();
+    if (mmND2) {
+      expect(() => presetSchema.parse(mmND2)).not.toThrow();
+    }
+  });
+
+  it('isDeviceMappingConfig returns true for DeviceMappingConfig', () => {
+    const presets = createSamplePresets();
+    const mmND2 = presets.find((p) => p.metadata.name === 'MidiMix Nord Drum 2');
+    expect(mmND2).toBeDefined();
+    if (mmND2) {
+      expect(isDeviceMappingConfig(mmND2.mapping)).toBe(true);
+      expect(isMappingConfig(mmND2.mapping)).toBe(false);
+    }
+  });
+
+  it('isMappingConfig returns true for MappingConfig', () => {
+    const presets = createSamplePresets();
+    const defaultPreset = presets.find((p) => p.metadata.name === 'Default');
+    expect(defaultPreset).toBeDefined();
+    if (defaultPreset) {
+      expect(isMappingConfig(defaultPreset.mapping)).toBe(true);
+      expect(isDeviceMappingConfig(defaultPreset.mapping)).toBe(false);
+    }
+  });
+
+  it('should reject invalid DeviceMappingConfig (empty deviceId)', () => {
+    const invalidPreset = {
+      metadata: {
+        id: 'test',
+        name: 'test',
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        tags: [],
+        favorite: false,
+      },
+      mapping: {
+        deviceId: '',
+        tracks: {},
+        sections: {},
+      },
+    };
+    const result = presetSchema.safeParse(invalidPreset);
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject mapping with neither tracks array nor deviceId', () => {
+    const invalidPreset = {
+      metadata: {
+        id: 'test',
+        name: 'test',
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        tags: [],
+        favorite: false,
+      },
+      mapping: {
+        foo: 'bar',
+      },
+    };
+    const result = presetSchema.safeParse(invalidPreset);
+    expect(result.success).toBe(false);
+  });
+
+  it('all 10 sample presets pass schema validation', () => {
+    const presets = createSamplePresets();
+    expect(presets).toHaveLength(10);
+    for (const preset of presets) {
+      expect(() => presetSchema.parse(preset)).not.toThrow();
     }
   });
 });

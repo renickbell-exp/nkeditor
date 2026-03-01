@@ -13,6 +13,7 @@
 import { create } from 'zustand';
 import type { ElectronAPI } from '../../main/preload';
 import type { PresetMetadata, Preset } from '@shared/ipc-protocol';
+import type { MappingConfig } from '@shared/types';
 import { createDefaultPreset } from '@shared/schemas';
 import { useControlsStore } from './controls';
 
@@ -176,15 +177,17 @@ export const usePresetStore = create<PresetStoreState>((set, get) => ({
         // Apply control values to GUI and send MIDI CC to synth
         // Pass transmitButtonsOnLoad to control whether button MIDI is sent
         const controlsStore = useControlsStore.getState();
+        // Controls store functions expect MappingConfig (nK2-shaped) mappings
+        const nk2Mapping = response.preset.mapping as MappingConfig;
         if (response.preset.controlValues) {
           await controlsStore.applyPresetValues(
             response.preset.controlValues,
-            response.preset.mapping,
+            nk2Mapping,
             transmitButtonsOnLoad
           );
         } else {
           // If no control values stored, at least apply labels from mapping
-          controlsStore.applyLabelsFromMapping(response.preset.mapping);
+          controlsStore.applyLabelsFromMapping(nk2Mapping);
         }
 
         set({

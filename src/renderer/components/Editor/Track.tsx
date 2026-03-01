@@ -18,7 +18,7 @@ import { useControlsStore } from '../../stores/controls';
 import { usePresetStore } from '../../stores/preset';
 import { HARDWARE_CC } from '@shared/constants';
 import type { ElectronAPI } from '../../../main/preload';
-import type { MappingEntry } from '@shared/types';
+import type { MappingEntry, MappingConfig } from '@shared/types';
 
 // Retrieve electronAPI from window for MIDI output
 const getElectronAPI = (): ElectronAPI | null => {
@@ -86,7 +86,11 @@ export function Track({ trackNumber, track }: TrackProps): React.ReactElement {
         // Get the current mapping to apply min/max scaling
         const currentPreset = usePresetStore.getState().currentPreset;
         const trackIndex = trackNumber - 1;
-        const mapping = currentPreset?.mapping.tracks[trackIndex]?.knob;
+        // nK2 editor components only handle MappingConfig presets (array-based tracks)
+        const trackMapping = Array.isArray(currentPreset?.mapping.tracks)
+          ? (currentPreset.mapping as MappingConfig).tracks[trackIndex]
+          : undefined;
+        const mapping = trackMapping?.knob;
 
         // Scale value from 0-127 to configured min-max range
         const minVal = mapping?.minValue ?? 0;
@@ -113,7 +117,11 @@ export function Track({ trackNumber, track }: TrackProps): React.ReactElement {
         // Get the current mapping to apply min/max scaling
         const currentPreset = usePresetStore.getState().currentPreset;
         const trackIndex = trackNumber - 1;
-        const mapping = currentPreset?.mapping.tracks[trackIndex]?.slider;
+        // nK2 editor components only handle MappingConfig presets (array-based tracks)
+        const sliderTrackMapping = Array.isArray(currentPreset?.mapping.tracks)
+          ? (currentPreset.mapping as MappingConfig).tracks[trackIndex]
+          : undefined;
+        const mapping = sliderTrackMapping?.slider;
 
         // Scale value from 0-127 to configured min-max range
         const minVal = mapping?.minValue ?? 0;
@@ -145,7 +153,11 @@ export function Track({ trackNumber, track }: TrackProps): React.ReactElement {
         // Get the current mapping to apply custom on/off values
         const currentPreset = usePresetStore.getState().currentPreset;
         const trackIndex = trackNumber - 1;
-        const mapping = currentPreset?.mapping.tracks[trackIndex]?.[buttonType];
+        // nK2 editor components only handle MappingConfig presets (array-based tracks)
+        const buttonTrackMapping = Array.isArray(currentPreset?.mapping.tracks)
+          ? (currentPreset.mapping as MappingConfig).tracks[trackIndex]
+          : undefined;
+        const mapping = buttonTrackMapping?.[buttonType];
 
         // Use custom on/off values if configured, otherwise default to 127/0
         const midiValue = getButtonMidiValue(newActive, mapping);

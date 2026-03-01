@@ -13,13 +13,21 @@ Built with Electron, React, and TypeScript.
 
 The architecture supports adding new devices through a device definition system. Each device declares its physical layout, MIDI protocol, LED behavior, and port identification patterns in a self-contained definition module.
 
+### Supported Target Synthesizers
+
+Presets can target specific synthesizers, mapping controller knobs/sliders/faders to the synth's MIDI CC parameters.
+
+| Synthesizer | Manufacturer | nK2 Params | MidiMix Params | Channel Architecture |
+|---|---|---|---|---|
+| **Nord Drum 2 Desktop** | Nord / Clavia | 16 (Spectra + Decay) | 32 (Spectra + Noise Filter + Timbre + Level) | Per-pad channels 1-6, Global FX ch 10 |
+
 ## Features
 
 - **Multi-Device Support** -- Connect and configure multiple MIDI controllers simultaneously. Switch between devices using a tab interface with a device selector dropdown.
 - **Device-Specific Editors** -- Each supported device has a purpose-built visual editor that mirrors its physical layout (e.g., the MidiMix editor shows 3 knob rows per track, while the nK2 editor shows 1 knob + 1 slider).
 - **CC and Note Remapping** -- Remap controls that send CC messages (knobs, sliders, faders) or Note messages (MidiMix buttons) to arbitrary output numbers and MIDI channels (1-16).
 - **Preset System** -- Save, load, duplicate, and organize mapping configurations as presets. Presets store both the CC mapping and the current control values (knob/slider positions, button states).
-- **Factory Presets** -- Ships with eight ready-to-use presets: five for nanoKONTROL2 (Default, Synth Lead, Drums, DAW Transport, DJ Mixer) and three for Akai MidiMix (Default MidiMix, MidiMix Synth, MidiMix DJ).
+- **Factory Presets** -- Ships with ten ready-to-use presets: six for nanoKONTROL2 (Default, Synth Lead, Drums, DAW Transport, DJ Mixer, Nord Drum 2) and four for Akai MidiMix (Default MidiMix, MidiMix Synth, MidiMix DJ, MidiMix Nord Drum 2). Nord Drum 2 presets target the Nord Drum 2 Desktop percussion synthesizer with per-pad channel mapping.
 - **Visual Editor** -- Interactive GUI that mirrors the physical controller layout. Click any control to edit its output CC/Note number, MIDI channel, label, value range, and button behavior (toggle/momentary).
 - **Librarian** -- Browse, search, filter (by tags and groups), favorite, rename, and manage your preset library. Supports A/B comparison between two presets.
 - **Quick Access Slots** -- Five configurable slots for instant preset switching.
@@ -124,6 +132,7 @@ nkEditor3/
       ipc-protocol.ts     # IPC channel names and request/response type definitions
       schemas.ts          # Zod validation schemas, factory preset generators
       types.ts            # Core TypeScript type definitions
+      nord-drum-2-cc.ts  # Nord Drum 2 MIDI CC constants and channel mappings
       devices/            # Device abstraction layer
         device-definition.ts  # DeviceDefinition interface and control types
         registry.ts           # Central device registry with lookup and auto-detection

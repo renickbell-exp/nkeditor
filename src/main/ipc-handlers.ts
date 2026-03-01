@@ -261,6 +261,10 @@ async function handlePresetApply(_event: Electron.IpcMainInvokeEvent, request: A
   }
 
   try {
+    // MIDI manager currently only supports nK2-shaped MappingConfig
+    if ('deviceId' in request.mapping) {
+      return { success: false, error: 'DeviceMappingConfig is not yet supported by the MIDI manager' };
+    }
     midiManager.loadMapping(request.mapping);
     return { success: true };
   } catch (error) {

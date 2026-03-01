@@ -12,7 +12,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { usePresetStore } from '../../stores/preset';
 import { useControlsStore } from '../../stores/controls';
 import { useSettingsStore } from '../../stores/settings';
-import type { MappingEntry, ButtonBehavior, TrackMapping, TransportMapping } from '@shared/types';
+import type { MappingEntry, MappingConfig, ButtonBehavior, TrackMapping, TransportMapping } from '@shared/types';
 import type { Preset } from '@shared/ipc-protocol';
 
 // =============================================================================
@@ -77,13 +77,17 @@ function getMappingEntry(
   preset: Preset | null
 ): MappingEntry | null {
   if (!preset) return null;
+  if (!Array.isArray(preset.mapping.tracks)) return null;
 
   const parsed = parseControlId(controlId);
   if (!parsed) return null;
 
+  // These editor components only handle nK2-shaped MappingConfig presets
+  const mapping = preset.mapping as MappingConfig;
+
   if (parsed.section === 'track' && parsed.trackNumber !== undefined) {
     const trackIndex = parsed.trackNumber - 1;
-    const track = preset.mapping.tracks[trackIndex];
+    const track = mapping.tracks[trackIndex];
     if (!track) return null;
     const controlKey = parsed.controlType as keyof TrackMapping;
     return track[controlKey] ?? null;
@@ -91,7 +95,7 @@ function getMappingEntry(
 
   if (parsed.section === 'transport') {
     const transportKey = parsed.controlType as keyof TransportMapping;
-    return preset.mapping.transport[transportKey] ?? null;
+    return mapping.transport[transportKey] ?? null;
   }
 
   return null;

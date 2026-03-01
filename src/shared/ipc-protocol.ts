@@ -5,7 +5,7 @@
  * the Electron main process and renderer process.
  */
 
-import type { MappingConfig, MidiPorts, CCMessage } from './types.js';
+import type { MappingConfig, DeviceMappingConfig, MidiPorts, CCMessage } from './types.js';
 
 // =============================================================================
 // IPC Channel Names
@@ -230,7 +230,7 @@ export interface ControlValues {
 /** Full preset data */
 export interface Preset {
   metadata: PresetMetadata;
-  mapping: MappingConfig;
+  mapping: MappingConfig | DeviceMappingConfig;
   /** Optional stored control values - when present, loading the preset will restore these values */
   controlValues?: ControlValues;
 }
@@ -278,7 +278,7 @@ export interface ListPresetsResponse {
 
 /** Request to apply a mapping configuration */
 export interface ApplyMappingRequest {
-  mapping: MappingConfig;
+  mapping: MappingConfig | DeviceMappingConfig;
 }
 
 /** Response from apply mapping */

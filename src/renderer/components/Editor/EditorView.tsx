@@ -16,6 +16,7 @@ import { usePresetStore } from '../../stores/preset';
 import { useUndoStore } from '../../stores/undo';
 import { NewPresetDialog } from '../Librarian/NewPresetDialog';
 import type { ControlValues, Preset } from '@shared/ipc-protocol';
+import type { MappingConfig } from '@shared/types';
 
 interface EditorViewProps {
   /** When provided, this editor is operating in multi-device mode for a specific instance */
@@ -250,7 +251,8 @@ export function EditorView({ instanceId: _instanceId }: EditorViewProps = {}): R
       const currentValues = captureControlValues();
       pushSnapshot('Randomize All', currentValues);
 
-      await randomizeKnobsAndSliders(currentPreset.mapping);
+      // nK2 editor only handles MappingConfig presets
+      await randomizeKnobsAndSliders(currentPreset.mapping as MappingConfig);
       markUnsavedChanges();
       setRandomizeFeedback('success');
       setTimeout(() => setRandomizeFeedback('idle'), 1000);
@@ -268,7 +270,8 @@ export function EditorView({ instanceId: _instanceId }: EditorViewProps = {}): R
       const currentValues = captureControlValues();
       pushSnapshot('Randomize Selected', currentValues);
 
-      await randomizeSelectedKnobsAndSliders(currentPreset.mapping);
+      // nK2 editor only handles MappingConfig presets
+      await randomizeSelectedKnobsAndSliders(currentPreset.mapping as MappingConfig);
       markUnsavedChanges();
       setRandomizeFeedback('success');
       setTimeout(() => setRandomizeFeedback('idle'), 1000);
@@ -284,7 +287,8 @@ export function EditorView({ instanceId: _instanceId }: EditorViewProps = {}): R
     try {
       const snapshot = popSnapshot();
       if (snapshot) {
-        await restoreFromControlValues(snapshot.controlValues, currentPreset.mapping);
+        // nK2 editor only handles MappingConfig presets
+        await restoreFromControlValues(snapshot.controlValues, currentPreset.mapping as MappingConfig);
         markUnsavedChanges();
         setUndoFeedback('success');
         setTimeout(() => setUndoFeedback('idle'), 1000);

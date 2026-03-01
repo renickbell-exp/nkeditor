@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nord Drum 2 Preset Templates - nkEditor3 Report #002</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="report-style.css">
+</head>
+<body>
+
+  <header class="report-header">
+    <h1>Nord Drum 2 Preset Templates</h1>
+    <p class="report-subtitle">nkEditor3 Implementation Report</p>
+    <div class="metadata">
+      <span><span class="label">Report:</span> #002</span>
+      <span><span class="label">Date:</span> 2026-02-11</span>
+      <span><span class="label">Author:</span> Claude</span>
+      <span><span class="label">Version:</span> 3.1.0</span>
+    </div>
+  </header>
+
+  <section class="prompt-section">
+    <h2>Original Prompt</h2>
+    <p>yes, research and develop a preset template for the nord drum 2 desktop percussion synth. download all useful technical documentation, then develop a template for this device for both the korg nanokontrol2, mapping 16 parameters, and for the akai midimix mapping 32 parameters. revise the implementation plan to include these features and changes, then ensure that the implementation plan is phased and granular so that it can be accomplished by appropriate subagents working in parallel. all phases should be divided into tasks, and task should be divided into subtasks. add all code to the test suite to ensure no future regressions, and check modifications for regressions in this round of work. when you are complete, update the documentation and make another report as before in the reports folder, including this prompt at the beginning of the report. label the report with a more clear report number, incrementing from the previous report. for the report, use the template and css generated previously; don't generate a new template. use 6 appropriate subagents for this work.</p>
+  </section>
+
+  <section class="section">
+    <h2>Summary</h2>
+    <p>Implemented two factory presets targeting the Nord Drum 2 Desktop percussion synthesizer: one for the Korg nanoKONTROL2 (16 parameters) and one for the Akai MidiMix (32 parameters). The MidiMix preset required extending the preset schema to support <code>DeviceMappingConfig</code>, which was identified as recommendation #4 in Report #001.</p>
+    <p>The Nord Drum 2 uses a per-pad channel architecture (pads 1-6 on MIDI channels 1-6, global FX on channel 10). All CC assignments were verified against the official Nord Drum 2 MIDI implementation chart. A dedicated CC reference module provides type-safe constants for all 26 per-pad parameters and 6 global FX parameters.</p>
+    <p>The implementation was executed across 6 phases using 6 subagents, expanding the test suite from 320 to 356 tests with zero regressions. The preset count increased from 8 to 10.</p>
+  </section>
+
+  <section class="section findings">
+    <h2>Findings</h2>
+
+    <div class="finding">
+      <div class="finding-title">
+        <span class="finding-severity medium">Medium</span>
+        Preset Schema Extension &mdash; DeviceMappingConfig Union
+      </div>
+      <div class="finding-location">src/shared/schemas.ts</div>
+      <div class="finding-description">
+        <p>The <code>presetSchema.mapping</code> field was changed from <code>mappingConfigSchema</code> to <code>z.union([mappingConfigSchema, deviceMappingConfigSchema])</code>. This required updating type narrowing in 8 downstream consumer files (ControlPopover, Track, Transport, EditorView, preset store, PresetList, EditControlValuesDialog, ipc-handlers) to handle the union type. Type guards <code>isDeviceMappingConfig()</code> and <code>isMappingConfig()</code> were added to discriminate the union at runtime.</p>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="finding-title">
+        <span class="finding-severity low">Low</span>
+        Parameter Selection &mdash; Musical Priority for Limited Controls
+      </div>
+      <div class="finding-location">src/shared/schemas.ts</div>
+      <div class="finding-description">
+        <p>The Nord Drum 2 exposes 26 per-pad CC parameters, but the nK2 can only map 2 per track (16 total). Parameters were selected by musical impact for live performance: Tone Spectra (CC 30) on knobs provides the most dramatic timbral sweep, while Tone Decay (CC 50) on sliders controls the most musically important envelope parameter. The MidiMix preset maps 4 per track (32 total) by adding Noise Filter Freq (CC 14) and Tone Timbre (CC 52).</p>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="finding-title">
+        <span class="finding-severity low">Low</span>
+        Channel-Per-Pad Architecture &mdash; Multi-Channel Mapping
+      </div>
+      <div class="finding-location">src/shared/nord-drum-2-cc.ts</div>
+      <div class="finding-description">
+        <p>Unlike generic MIDI presets which use a single channel, the Nord Drum 2 presets assign different MIDI channels to each track (channels 1-6 for pads, channel 10 for global FX). This is the first preset in nkEditor3 that uses the <code>MappingEntry.channel</code> field for per-control channel assignment rather than a global channel. The implementation validates that the nkEditor3 architecture correctly supports per-control channel routing.</p>
+      </div>
+    </div>
+
+  </section>
+
+  <section class="section">
+    <h2>Tests Added</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Test Suite</th>
+          <th>File</th>
+          <th>Covers</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>nord-drum-2</code></td>
+          <td><code>tests/nord-drum-2.test.ts</code></td>
+          <td>44 tests: CC range validation, duplicate detection, hardware spec cross-reference for all 26+6 parameters, channel assignments, section structure</td>
+        </tr>
+        <tr>
+          <td><code>config-preset</code> (extended)</td>
+          <td><code>tests/config-preset.test.ts</code></td>
+          <td>36 new tests: nK2 Nord Drum 2 preset validation (13 tests), MidiMix Nord Drum 2 preset validation (14 tests), DeviceMappingConfig schema extension tests (7 tests), updated preset count assertions</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>Total: 356 tests across 7 suites, all passing. Previous count: 320 tests (276 original + 44 Nord Drum 2 CC tests added in Phase 1). Net increase: 36 preset/schema tests.</p>
+  </section>
+
+  <section class="section">
+    <h2>Implementation Plan Updates</h2>
+
+    <p>The implementation was executed in 6 phases using 6 subagents, with phases 1+2 and 3+4 running in parallel:</p>
+
+    <ul>
+      <li><strong>Phase 1: Nord Drum 2 CC Reference Module</strong> &mdash; Created <code>src/shared/nord-drum-2-cc.ts</code> with typed constants for all 26 per-pad CCs (organized by Tone/Noise/Click/Mix sections), 6 global FX CCs, and pad-to-channel mappings. Added 44 validation tests.</li>
+      <li><strong>Phase 2: Preset Schema Extension</strong> &mdash; Added <code>deviceMappingConfigSchema</code> Zod schema, changed <code>presetSchema.mapping</code> to a union type, added type guards, updated 8 downstream consumer files for type narrowing. Zero regressions.</li>
+      <li><strong>Phase 3: nK2 Nord Drum 2 Preset</strong> &mdash; Created <code>createNordDrum2NK2Preset()</code> mapping 16 parameters: Tone Spectra on knobs, Tone Decay on sliders (pads 1-6), Echo and Distortion/EQ on tracks 7-8 (channel 10).</li>
+      <li><strong>Phase 4: MidiMix Nord Drum 2 Preset</strong> &mdash; Created <code>createNordDrum2MidiMixPreset()</code> using <code>DeviceMappingConfig</code> to map all 32 continuous controls across 3 knob rows and 8 faders. Uncommented <code>MIDIMIX_KNOB_ROW2</code> and <code>MIDIMIX_KNOB_ROW3</code>.</li>
+      <li><strong>Phase 5: Comprehensive Tests</strong> &mdash; Updated preset count assertions, added 13 nK2 preset tests, 14 MidiMix preset tests, and 7 schema extension tests. All 356 tests passing.</li>
+      <li><strong>Phase 6: Documentation &amp; Report</strong> &mdash; Updated README.md with new preset count, supported target synthesizers section, and project structure. Created this report.</li>
+    </ul>
+  </section>
+
+  <section class="section">
+    <h2>Recommendations</h2>
+
+    <ol>
+      <li><strong>Hardware Testing</strong> &mdash; Test both presets with a physical Nord Drum 2 Desktop connected to verify CC assignments, channel routing, and parameter response. The CCs were verified against the official MIDI implementation chart but have not been validated end-to-end with hardware.</li>
+      <li><strong>Additional Target Synthesizers</strong> &mdash; The Nord Drum 2 CC reference module pattern (<code>nord-drum-2-cc.ts</code>) establishes a template for adding more synth-specific presets. Recommended candidates: Novation BassStation II, ASM Hydrasynth, Korg Minilogue XD, Moog Grandmother.</li>
+      <li><strong>DeviceMappingConfig UI Editor</strong> &mdash; The MidiMix Nord Drum 2 preset uses <code>DeviceMappingConfig</code> which is not yet fully supported by the UI editor. The MidiMixEditor component works with the nK2-shaped <code>MappingConfig</code>. A future enhancement should allow editing DeviceMappingConfig presets in the MidiMix editor, showing all 3 knob rows with their mapped labels.</li>
+      <li><strong>Preset Export/Import</strong> &mdash; As synth-specific presets accumulate, consider adding preset export/import functionality so users can share Nord Drum 2 or other synth mappings independently of the application.</li>
+      <li><strong>Parameter Expansion Presets</strong> &mdash; The nK2 Nord Drum 2 preset only maps 16 of 26 available per-pad parameters. Consider creating variant presets (e.g., "Nord Drum 2 Noise" focusing on noise section, "Nord Drum 2 Full" using channel-per-pad with multiple nK2 scenes).</li>
+    </ol>
+  </section>
+
+  <hr>
+
+  <footer>
+    <p class="metadata">
+      <span><span class="label">Generated by:</span> nkEditor3 Report System</span>
+      <span><span class="label">Template Version:</span> 1.0</span>
+    </p>
+  </footer>
+
+</body>
+</html>

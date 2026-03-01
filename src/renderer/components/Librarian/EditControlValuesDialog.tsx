@@ -141,7 +141,8 @@ function highlightJSON(json: string): React.ReactNode {
  */
 function buildComprehensiveJson(preset: Preset): object {
   const cv = preset.controlValues;
-  const mapping = preset.mapping;
+  // buildComprehensiveJson only handles nK2-shaped MappingConfig presets
+  const mapping = preset.mapping as MappingConfig;
 
   const tracks = [];
   for (let i = 0; i < 8; i++) {
@@ -484,7 +485,8 @@ export function EditControlValuesDialog({ isOpen, onClose, preset }: EditControl
       return;
     }
 
-    const result = parseComprehensiveJson(parsed, preset.mapping);
+    // parseComprehensiveJson expects nK2-shaped MappingConfig
+    const result = parseComprehensiveJson(parsed, preset.mapping as MappingConfig);
     if ('error' in result) {
       setError(result.error);
       return;

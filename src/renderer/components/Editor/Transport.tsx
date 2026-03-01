@@ -15,7 +15,7 @@ import { usePresetStore } from '../../stores/preset';
 import { HARDWARE_CC } from '@shared/constants';
 import { ControlPopover } from './ControlPopover';
 import type { ElectronAPI } from '../../../main/preload';
-import type { MappingEntry, TransportControlType } from '@shared/types';
+import type { MappingEntry, MappingConfig, TransportControlType } from '@shared/types';
 
 // Retrieve electronAPI from window for MIDI output
 const getElectronAPI = (): ElectronAPI | null => {
@@ -74,7 +74,11 @@ export function Transport(): React.ReactElement {
       if (ccNumber !== undefined) {
         // Get the current mapping to apply custom on/off values
         const currentPreset = usePresetStore.getState().currentPreset;
-        const mapping = currentPreset?.mapping.transport[controlName as TransportControlType];
+        // nK2 editor components only handle MappingConfig presets
+        const nk2Mapping = currentPreset?.mapping && 'transport' in currentPreset.mapping
+          ? (currentPreset.mapping as MappingConfig)
+          : undefined;
+        const mapping = nk2Mapping?.transport[controlName as TransportControlType];
 
         // Use custom on/off values if configured, otherwise default to 127/0
         const midiValue = getButtonMidiValue(newActive, mapping);

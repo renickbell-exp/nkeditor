@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { DeviceMappingConfig, MappingEntry as SharedMappingEntry } from './types.js';
 import { getDeviceDefinition } from './devices/registry.js';
 import type { DeviceDefinition, ControlDef } from './devices/device-definition.js';
+import { NORD_DRUM_2_CC, NORD_DRUM_2_FX_CC, NORD_DRUM_2_CHANNELS } from './nord-drum-2-cc.js';
 
 // =============================================================================
 // MIDI Value Schemas
@@ -81,6 +82,13 @@ export const mappingConfigSchema = z.object({
   transport: transportMappingSchema,
 });
 
+/** DeviceMappingConfig: generic mapping for non-nK2 devices */
+export const deviceMappingConfigSchema = z.object({
+  deviceId: z.string().min(1),
+  tracks: z.record(z.string(), z.record(z.string(), mappingEntrySchema)),
+  sections: z.record(z.string(), z.record(z.string(), mappingEntrySchema)),
+});
+
 // =============================================================================
 // Control Values Schemas (for preset state storage)
 // =============================================================================
@@ -152,7 +160,7 @@ export const presetMetadataSchema = z.object({
 /** Full preset (metadata + mapping + optional control values) */
 export const presetSchema = z.object({
   metadata: presetMetadataSchema,
-  mapping: mappingConfigSchema,
+  mapping: z.union([mappingConfigSchema, deviceMappingConfigSchema]),
   controlValues: controlValuesSchema.optional(),
 });
 
@@ -271,6 +279,7 @@ export type MappingEntry = z.infer<typeof mappingEntrySchema>;
 export type TrackMapping = z.infer<typeof trackMappingSchema>;
 export type TransportMapping = z.infer<typeof transportMappingSchema>;
 export type MappingConfig = z.infer<typeof mappingConfigSchema>;
+export type DeviceMappingConfigSchema = z.infer<typeof deviceMappingConfigSchema>;
 export type TrackControlValues = z.infer<typeof trackControlValuesSchema>;
 export type TransportControlValues = z.infer<typeof transportControlValuesSchema>;
 export type ControlValues = z.infer<typeof controlValuesSchema>;
@@ -316,6 +325,24 @@ export function safeValidatePreset(data: unknown): { success: true; data: Preset
     return { success: true, data: result.data };
   }
   return { success: false, error: result.error.message };
+}
+
+/**
+ * Type guard: checks if a mapping is a DeviceMappingConfig (has deviceId).
+ */
+export function isDeviceMappingConfig(
+  mapping: MappingConfig | z.infer<typeof deviceMappingConfigSchema>
+): mapping is z.infer<typeof deviceMappingConfigSchema> {
+  return 'deviceId' in mapping && typeof (mapping as Record<string, unknown>).deviceId === 'string';
+}
+
+/**
+ * Type guard: checks if a mapping is a standard MappingConfig (tracks is an array).
+ */
+export function isMappingConfig(
+  mapping: MappingConfig | z.infer<typeof deviceMappingConfigSchema>
+): mapping is MappingConfig {
+  return Array.isArray((mapping as Record<string, unknown>).tracks);
 }
 
 /**
@@ -600,7 +627,11 @@ type TrackIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
  * This helper exists because TypeScript cannot infer that tracks[] always has 8 elements.
  */
 function getTrack(preset: Preset, index: TrackIndex): TrackMapping {
-  const track = preset.mapping.tracks[index];
+  const mapping = preset.mapping;
+  if (!Array.isArray(mapping.tracks)) {
+    throw new Error('getTrack() requires a MappingConfig preset (array-based tracks), not a DeviceMappingConfig');
+  }
+  const track = (mapping as MappingConfig).tracks[index];
   if (!track) {
     throw new Error(`Track ${index} not found - preset mapping is malformed`);
   }
@@ -710,19 +741,22 @@ function createDAWTransportPreset(): Preset {
   );
   preset.metadata.tags = ['factory', 'daw', 'transport', 'mixing'];
 
+  // createDefaultPreset always produces a MappingConfig; narrow the union for transport access
+  const dawMapping = preset.mapping as MappingConfig;
+
   // Standard Mackie Control-style transport mappings
-  preset.mapping.transport.play.outputCC = 94;
-  preset.mapping.transport.play.label = 'Play';
-  preset.mapping.transport.stop.outputCC = 93;
-  preset.mapping.transport.stop.label = 'Stop';
-  preset.mapping.transport.record.outputCC = 95;
-  preset.mapping.transport.record.label = 'Record';
-  preset.mapping.transport.rewind.outputCC = 91;
-  preset.mapping.transport.rewind.label = 'Rewind';
-  preset.mapping.transport.forward.outputCC = 92;
-  preset.mapping.transport.forward.label = 'Fast Fwd';
-  preset.mapping.transport.cycle.outputCC = 86;
-  preset.mapping.transport.cycle.label = 'Loop';
+  dawMapping.transport.play.outputCC = 94;
+  dawMapping.transport.play.label = 'Play';
+  dawMapping.transport.stop.outputCC = 93;
+  dawMapping.transport.stop.label = 'Stop';
+  dawMapping.transport.record.outputCC = 95;
+  dawMapping.transport.record.label = 'Record';
+  dawMapping.transport.rewind.outputCC = 91;
+  dawMapping.transport.rewind.label = 'Rewind';
+  dawMapping.transport.forward.outputCC = 92;
+  dawMapping.transport.forward.label = 'Fast Fwd';
+  dawMapping.transport.cycle.outputCC = 86;
+  dawMapping.transport.cycle.label = 'Loop';
 
   // Track labels for DAW mixing
   const dawTrackLabels = ['Ch 1', 'Ch 2', 'Ch 3', 'Ch 4', 'Ch 5', 'Ch 6', 'Ch 7', 'Master'] as const;
@@ -794,6 +828,99 @@ function createDJMixerPreset(): Preset {
   return preset;
 }
 
+/**
+ * Creates the "Nord Drum 2" preset for nanoKONTROL2.
+ * Maps 16 parameters to control the Nord Drum 2 Desktop percussion synthesizer.
+ * Tracks 1-6 control individual pads (channels 1-6) with Tone Spectra on knobs
+ * and Tone Decay on sliders. Tracks 7-8 control global FX on channel 10.
+ */
+function createNordDrum2NK2Preset(): Preset {
+  const preset = createDefaultPreset(
+    'Nord Drum 2',
+    'Nord Drum 2 Desktop control. Knobs: Tone Spectra, Sliders: Tone Decay. Tracks 1-6 = Pads, Tracks 7-8 = Global FX (ch10).',
+    'Nord Drum 2'
+  );
+  preset.metadata.tags = ['factory', 'nord-drum-2', 'percussion', 'synthesizer'];
+
+  // Pad channels (1-indexed as used by MappingEntry.channel)
+  const padChannels = [
+    NORD_DRUM_2_CHANNELS.PAD_1,
+    NORD_DRUM_2_CHANNELS.PAD_2,
+    NORD_DRUM_2_CHANNELS.PAD_3,
+    NORD_DRUM_2_CHANNELS.PAD_4,
+    NORD_DRUM_2_CHANNELS.PAD_5,
+    NORD_DRUM_2_CHANNELS.PAD_6,
+  ] as const;
+
+  // Tracks 0-5: individual pads (narrowed to 6-element tuple indices)
+  type PadIndex = 0 | 1 | 2 | 3 | 4 | 5;
+  const padTrackIndices: PadIndex[] = [0, 1, 2, 3, 4, 5];
+  for (const i of padTrackIndices) {
+    const track = getTrack(preset, i);
+    const padNum = i + 1;
+
+    // Knob -> Tone Spectra
+    track.knob.outputCC = NORD_DRUM_2_CC.TONE.SPECTRA;
+    track.knob.channel = padChannels[i];
+    track.knob.label = `Pad${padNum} Spectra`;
+
+    // Slider -> Tone Decay
+    track.slider.outputCC = NORD_DRUM_2_CC.TONE.DECAY;
+    track.slider.channel = padChannels[i];
+    track.slider.label = `Pad${padNum} Decay`;
+
+    // Solo button -> momentary trigger
+    track.solo.channel = padChannels[i];
+    track.solo.behavior = 'momentary';
+    track.solo.label = 'Trigger';
+
+    // Mute button -> toggle mute
+    track.mute.channel = padChannels[i];
+    track.mute.behavior = 'toggle';
+    track.mute.label = 'Mute';
+
+    // Rec button -> keep default
+    track.rec.channel = padChannels[i];
+    track.rec.label = 'Rec';
+  }
+
+  // Track 6: Global FX - Echo
+  const fxTrack1 = getTrack(preset, 6);
+  fxTrack1.knob.outputCC = NORD_DRUM_2_FX_CC.ECHO_AMOUNT;
+  fxTrack1.knob.channel = NORD_DRUM_2_CHANNELS.GLOBAL_FX;
+  fxTrack1.knob.label = 'Echo Amount';
+  fxTrack1.slider.outputCC = NORD_DRUM_2_FX_CC.ECHO_FEEDBACK;
+  fxTrack1.slider.channel = NORD_DRUM_2_CHANNELS.GLOBAL_FX;
+  fxTrack1.slider.label = 'Echo Feedbk';
+  fxTrack1.solo.channel = NORD_DRUM_2_CHANNELS.GLOBAL_FX;
+  fxTrack1.solo.behavior = 'momentary';
+  fxTrack1.solo.label = 'Trigger';
+  fxTrack1.mute.channel = NORD_DRUM_2_CHANNELS.GLOBAL_FX;
+  fxTrack1.mute.behavior = 'toggle';
+  fxTrack1.mute.label = 'Mute';
+  fxTrack1.rec.channel = NORD_DRUM_2_CHANNELS.GLOBAL_FX;
+  fxTrack1.rec.label = 'Rec';
+
+  // Track 7: Global FX - Distortion & EQ
+  const fxTrack2 = getTrack(preset, 7);
+  fxTrack2.knob.outputCC = NORD_DRUM_2_FX_CC.DIST_AMOUNT;
+  fxTrack2.knob.channel = NORD_DRUM_2_CHANNELS.GLOBAL_FX;
+  fxTrack2.knob.label = 'Dist Amount';
+  fxTrack2.slider.outputCC = NORD_DRUM_2_FX_CC.EQ_GAIN;
+  fxTrack2.slider.channel = NORD_DRUM_2_CHANNELS.GLOBAL_FX;
+  fxTrack2.slider.label = 'EQ Gain';
+  fxTrack2.solo.channel = NORD_DRUM_2_CHANNELS.GLOBAL_FX;
+  fxTrack2.solo.behavior = 'momentary';
+  fxTrack2.solo.label = 'Trigger';
+  fxTrack2.mute.channel = NORD_DRUM_2_CHANNELS.GLOBAL_FX;
+  fxTrack2.mute.behavior = 'toggle';
+  fxTrack2.mute.label = 'Mute';
+  fxTrack2.rec.channel = NORD_DRUM_2_CHANNELS.GLOBAL_FX;
+  fxTrack2.rec.label = 'Rec';
+
+  return preset;
+}
+
 // =============================================================================
 // MidiMix Sample Preset Factories
 // =============================================================================
@@ -805,9 +932,8 @@ function createDJMixerPreset(): Preset {
  * that will never change.
  */
 const MIDIMIX_KNOB_ROW1 = [16, 20, 24, 28, 46, 50, 54, 58] as const;
-// Knob rows 2 & 3 reserved for future DeviceMappingConfig presets
-// const MIDIMIX_KNOB_ROW2 = [17, 21, 25, 29, 47, 51, 55, 59] as const;
-// const MIDIMIX_KNOB_ROW3 = [18, 22, 26, 30, 48, 52, 56, 60] as const;
+const MIDIMIX_KNOB_ROW2 = [17, 21, 25, 29, 47, 51, 55, 59] as const;
+const MIDIMIX_KNOB_ROW3 = [18, 22, 26, 30, 48, 52, 56, 60] as const;
 const MIDIMIX_FADERS = [19, 23, 27, 31, 49, 53, 57, 61] as const;
 const MIDIMIX_MUTE_NOTES = [1, 4, 7, 10, 13, 16, 19, 22] as const;
 const MIDIMIX_SOLO_NOTES = [2, 5, 8, 11, 14, 17, 20, 23] as const;
@@ -979,6 +1105,216 @@ function createMidiMixDJPreset(): Preset {
 }
 
 /**
+ * Creates the "MidiMix Nord Drum 2" preset using DeviceMappingConfig.
+ * Maps 32 continuous controls across all 3 knob rows and 8 faders to control
+ * the Nord Drum 2 Desktop. Tracks 1-6 = Pads (channels 1-6),
+ * Tracks 7-8 = Global FX (channel 10).
+ */
+function createNordDrum2MidiMixPreset(): Preset {
+  const padChannels = [
+    NORD_DRUM_2_CHANNELS.PAD_1,
+    NORD_DRUM_2_CHANNELS.PAD_2,
+    NORD_DRUM_2_CHANNELS.PAD_3,
+    NORD_DRUM_2_CHANNELS.PAD_4,
+    NORD_DRUM_2_CHANNELS.PAD_5,
+    NORD_DRUM_2_CHANNELS.PAD_6,
+  ] as const;
+
+  const tracks: Record<string, Record<string, MappingEntry>> = {};
+
+  // Tracks 1-6: individual pads (channels 1-6)
+  type PadIndex = 0 | 1 | 2 | 3 | 4 | 5;
+  for (let i = 0; i < 6; i++) {
+    const idx = i as TrackIndex;
+    const padNum = i + 1;
+    const ch = padChannels[i as PadIndex];
+
+    tracks[String(padNum)] = {
+      knob1: {
+        inputCC: MIDIMIX_KNOB_ROW1[idx],
+        outputCC: NORD_DRUM_2_CC.TONE.SPECTRA,
+        channel: ch,
+        messageType: 'cc',
+        label: `Pad${padNum} Spectra`,
+      },
+      knob2: {
+        inputCC: MIDIMIX_KNOB_ROW2[idx],
+        outputCC: NORD_DRUM_2_CC.NOISE.FILTER_FREQ,
+        channel: ch,
+        messageType: 'cc',
+        label: `Pad${padNum} NoiseFlt`,
+      },
+      knob3: {
+        inputCC: MIDIMIX_KNOB_ROW3[idx],
+        outputCC: NORD_DRUM_2_CC.TONE.TIMBRE,
+        channel: ch,
+        messageType: 'cc',
+        label: `Pad${padNum} Timbre`,
+      },
+      fader: {
+        inputCC: MIDIMIX_FADERS[idx],
+        outputCC: NORD_DRUM_2_CC.MIX.LEVEL,
+        channel: ch,
+        messageType: 'cc',
+        label: `Pad${padNum} Level`,
+      },
+      mute: {
+        inputCC: MIDIMIX_MUTE_NOTES[idx],
+        outputCC: MIDIMIX_MUTE_NOTES[idx],
+        channel: ch,
+        behavior: 'toggle',
+        messageType: 'note',
+        label: 'Mute',
+      },
+      solo: {
+        inputCC: MIDIMIX_SOLO_NOTES[idx],
+        outputCC: MIDIMIX_SOLO_NOTES[idx],
+        channel: ch,
+        behavior: 'momentary',
+        messageType: 'note',
+        label: 'Trigger',
+      },
+      rec_arm: {
+        inputCC: MIDIMIX_REC_ARM_NOTES[idx],
+        outputCC: MIDIMIX_REC_ARM_NOTES[idx],
+        channel: ch,
+        behavior: 'momentary',
+        messageType: 'note',
+        label: 'Rec',
+      },
+    };
+  }
+
+  // Track 7: Global FX - Echo + EQ Freq
+  const fxCh = NORD_DRUM_2_CHANNELS.GLOBAL_FX;
+  tracks['7'] = {
+    knob1: {
+      inputCC: MIDIMIX_KNOB_ROW1[6],
+      outputCC: NORD_DRUM_2_FX_CC.ECHO_AMOUNT,
+      channel: fxCh,
+      messageType: 'cc',
+      label: 'Echo Amt',
+    },
+    knob2: {
+      inputCC: MIDIMIX_KNOB_ROW2[6],
+      outputCC: NORD_DRUM_2_FX_CC.ECHO_FEEDBACK,
+      channel: fxCh,
+      messageType: 'cc',
+      label: 'Echo FB',
+    },
+    knob3: {
+      inputCC: MIDIMIX_KNOB_ROW3[6],
+      outputCC: NORD_DRUM_2_FX_CC.EQ_FREQ,
+      channel: fxCh,
+      messageType: 'cc',
+      label: 'EQ Freq',
+    },
+    fader: {
+      inputCC: MIDIMIX_FADERS[6],
+      outputCC: NORD_DRUM_2_FX_CC.EQ_GAIN,
+      channel: fxCh,
+      messageType: 'cc',
+      label: 'EQ Gain',
+    },
+    mute: {
+      inputCC: MIDIMIX_MUTE_NOTES[6],
+      outputCC: MIDIMIX_MUTE_NOTES[6],
+      channel: fxCh,
+      behavior: 'toggle',
+      messageType: 'note',
+      label: 'Mute',
+    },
+    solo: {
+      inputCC: MIDIMIX_SOLO_NOTES[6],
+      outputCC: MIDIMIX_SOLO_NOTES[6],
+      channel: fxCh,
+      behavior: 'momentary',
+      messageType: 'note',
+      label: 'Trigger',
+    },
+    rec_arm: {
+      inputCC: MIDIMIX_REC_ARM_NOTES[6],
+      outputCC: MIDIMIX_REC_ARM_NOTES[6],
+      channel: fxCh,
+      behavior: 'momentary',
+      messageType: 'note',
+      label: 'Rec',
+    },
+  };
+
+  // Track 8: Global FX - Distortion + misc
+  tracks['8'] = {
+    knob1: {
+      inputCC: MIDIMIX_KNOB_ROW1[7],
+      outputCC: NORD_DRUM_2_FX_CC.DIST_AMOUNT,
+      channel: fxCh,
+      messageType: 'cc',
+      label: 'Dist Amt',
+    },
+    knob2: {
+      inputCC: MIDIMIX_KNOB_ROW2[7],
+      outputCC: NORD_DRUM_2_FX_CC.DIST_TYPE,
+      channel: fxCh,
+      messageType: 'cc',
+      label: 'Dist Type',
+    },
+    knob3: {
+      inputCC: MIDIMIX_KNOB_ROW3[7],
+      outputCC: NORD_DRUM_2_CC.TONE.DECAY,
+      channel: fxCh,
+      messageType: 'cc',
+      label: 'Tone Dcy',
+    },
+    fader: {
+      inputCC: MIDIMIX_FADERS[7],
+      outputCC: NORD_DRUM_2_CC.TONE.PUNCH,
+      channel: fxCh,
+      messageType: 'cc',
+      label: 'Punch',
+    },
+    mute: {
+      inputCC: MIDIMIX_MUTE_NOTES[7],
+      outputCC: MIDIMIX_MUTE_NOTES[7],
+      channel: fxCh,
+      behavior: 'toggle',
+      messageType: 'note',
+      label: 'Mute',
+    },
+    solo: {
+      inputCC: MIDIMIX_SOLO_NOTES[7],
+      outputCC: MIDIMIX_SOLO_NOTES[7],
+      channel: fxCh,
+      behavior: 'momentary',
+      messageType: 'note',
+      label: 'Trigger',
+    },
+    rec_arm: {
+      inputCC: MIDIMIX_REC_ARM_NOTES[7],
+      outputCC: MIDIMIX_REC_ARM_NOTES[7],
+      channel: fxCh,
+      behavior: 'momentary',
+      messageType: 'note',
+      label: 'Rec',
+    },
+  };
+
+  const mapping: z.infer<typeof deviceMappingConfigSchema> = {
+    deviceId: 'akai-midimix',
+    tracks,
+    sections: {},
+  };
+
+  const metadata = createDefaultPresetMetadata('MidiMix Nord Drum 2', 'Nord Drum 2');
+  metadata.description = 'Nord Drum 2 Desktop control for Akai MidiMix. 32 parameters: Knob1=Spectra, Knob2=Noise Filter, Knob3=Timbre, Faders=Level. Tracks 1-6=Pads, 7-8=Global FX (ch10).';
+  metadata.tags = ['factory', 'nord-drum-2', 'midimix', 'percussion', 'synthesizer'];
+
+  return {
+    metadata,
+    mapping,
+  };
+}
+
+/**
  * Creates all sample presets for first-run initialization.
  * Returns an array of presets ready to be saved.
  * Includes both nanoKONTROL2 and MidiMix factory presets.
@@ -990,9 +1326,11 @@ export function createSamplePresets(): Preset[] {
     createDrumsPreset(),
     createDAWTransportPreset(),
     createDJMixerPreset(),
+    createNordDrum2NK2Preset(),
     createDefaultMidiMixPreset(),
     createMidiMixSynthPreset(),
     createMidiMixDJPreset(),
+    createNordDrum2MidiMixPreset(),
   ];
 }
 
