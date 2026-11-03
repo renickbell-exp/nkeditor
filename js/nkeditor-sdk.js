@@ -186,3 +186,33 @@ export function parseHardwareFingerprint(str) {
   };
 }
 
+export const RESPONSE_CURVES = Object.freeze(['linear', 'exponential', 'logarithmic', 's_curve']);
+
+export const SOFT_TAKEOVER_MODES = Object.freeze(['catch', 'jump', 'pickup']);
+
+/**
+ * Mirrors `ResponseCurve::transform_value` in `src/mapping_engine.rs`.
+ */
+export function transformContinuousValue(
+  rawValue,
+  { minValue = 0, maxValue = 127, invert = false, curve = 'linear' } = {}
+) {
+  const clamped = Math.max(0, Math.min(127, Number(rawValue) || 0));
+  let t = clamped / 127.0;
+  if (invert) {
+    t = 1.0 - t;
+  }
+  let curved = t;
+  if (curve === 'exponential') {
+    curved = t * t;
+  } else if (curve === 'logarithmic') {
+    curved = Math.log(1.0 + 9.0 * t) / Math.log(10.0);
+  } else if (curve === 's_curve') {
+    curved = t * t * (3.0 - 2.0 * t);
+  }
+  const low = Math.min(minValue, maxValue);
+  const high = Math.max(minValue, maxValue);
+  return Math.round(Math.max(0, Math.min(127, low + curved * (high - low))));
+}
+
+

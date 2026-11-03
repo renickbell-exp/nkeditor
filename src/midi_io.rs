@@ -54,6 +54,33 @@ impl RawMidiPacket {
         }
     }
 
+    /// Encodes a 1-indexed channel (`1..=16`) Note Off message.
+    #[must_use]
+    pub const fn note_off(channel: u8, note: u8, velocity: u8) -> Self {
+        let ch = (channel.saturating_sub(1)) & 0x0F;
+        Self {
+            status: 0x80 | ch,
+            data1: note & 0x7F,
+            data2: velocity & 0x7F,
+        }
+    }
+
+    /// Decodes this packet into `(message_type, channel_1_indexed, midi_number, value)`.
+    /// Note Off (`0x80..=0x8F`) is normalized to `(MidiMessageType::Note, channel, note, 0)`.
+    #[must_use]
+    pub const fn decode(self) -> Option<(MidiMessageType, u8, u8, u8)> {
+        let status_nibble = self.status & 0xF0;
+        let channel = (self.status & 0x0F) + 1;
+        let number = self.data1 & 0x7F;
+        let value = self.data2 & 0x7F;
+        match status_nibble {
+            0xB0 => Some((MidiMessageType::Cc, channel, number, value)),
+            0x90 => Some((MidiMessageType::Note, channel, number, value)),
+            0x80 => Some((MidiMessageType::Note, channel, number, 0)),
+            _ => None,
+        }
+    }
+
     /// Returns the 3-byte array `[status, data1, data2]`.
     #[must_use]
     pub const fn to_bytes(self) -> [u8; 3] {

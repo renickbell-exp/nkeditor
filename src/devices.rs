@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 // =============================================================================
 
 /// MIDI message type used by physical controls and hardware LEDs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MidiMessageType {
     /// Control Change (`0xB0 .. 0xBF`).

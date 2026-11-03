@@ -1,7 +1,8 @@
 //! `nkEditor4` desktop entry point.
 
 use eframe::egui;
-use nkeditor::devices::{get_all_device_definitions, DeviceDefinition};
+use nkeditor::devices::{get_all_device_definitions, get_device_definition, DeviceDefinition};
+use nkeditor::mapping_engine::{DeviceMappingConfig, MultiDeviceMappingEngine};
 use nkeditor::midi_io::MultiDeviceManager;
 use nkeditor::theme::ThemeSettings;
 
@@ -11,6 +12,7 @@ pub struct NkEditorApp {
     pub devices: Vec<DeviceDefinition>,
     pub active_device_index: usize,
     pub device_manager: MultiDeviceManager,
+    pub mapping_engine: MultiDeviceMappingEngine,
     theme_dirty: bool,
 }
 
@@ -18,11 +20,23 @@ impl Default for NkEditorApp {
     fn default() -> Self {
         let mut device_manager = MultiDeviceManager::new();
         let _ = device_manager.poll_host_hardware();
+        let mut mapping_engine = MultiDeviceMappingEngine::new();
+        for (key, session) in &device_manager.sessions {
+            if let Some(ref def_id) = session.definition_id {
+                if let Some(def) = get_device_definition(def_id) {
+                    mapping_engine.register_device_pipeline(
+                        key.clone(),
+                        DeviceMappingConfig::from_device_definition(&def),
+                    );
+                }
+            }
+        }
         Self {
             theme_settings: ThemeSettings::default(),
             devices: get_all_device_definitions(),
             active_device_index: 0,
             device_manager,
+            mapping_engine,
             theme_dirty: true,
         }
     }
