@@ -1,0 +1,22 @@
+[package]
+name = "nkeditor"
+version = "4.0.0"
+edition = "2021"
+description = "Pure Rust egui MIDI CC/Note remapper and 8opPerc performance cockpit for Korg nanoKONTROL2 and Akai MIDI Mix"
+license = "MIT"
+
+[lib]
+name = "nkeditor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nkeditor"
+path = "src/main.rs"
+
+[dependencies]
+egui = "0.29"
+eframe = "0.29"
+yaae-theme = { path = "/home/renick/claude/yaae/crates/yaae-theme", features = ["egui", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rosc = "0.10"

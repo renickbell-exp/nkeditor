@@ -1,0 +1,104 @@
+//! `nkEditor4` desktop entry point.
+
+use eframe::egui;
+use nkeditor::devices::{get_all_device_definitions, DeviceDefinition};
+use nkeditor::theme::ThemeSettings;
+
+/// Root application state for the `nkEditor4` desktop application.
+pub struct NkEditorApp {
+    pub theme_settings: ThemeSettings,
+    pub devices: Vec<DeviceDefinition>,
+    pub active_device_index: usize,
+    theme_dirty: bool,
+}
+
+impl Default for NkEditorApp {
+    fn default() -> Self {
+        Self {
+            theme_settings: ThemeSettings::default(),
+            devices: get_all_device_definitions(),
+            active_device_index: 0,
+            theme_dirty: true,
+        }
+    }
+}
+
+impl NkEditorApp {
+    #[must_use]
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let app = Self::default();
+        app.theme_settings.apply_to_ctx(&cc.egui_ctx);
+        app
+    }
+}
+
+impl eframe::App for NkEditorApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.theme_dirty {
+            self.theme_settings.apply_to_ctx(ctx);
+            self.theme_dirty = false;
+        }
+
+        egui::TopBottomPanel::top("nkeditor_header").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("nkEditor4");
+                ui.separator();
+                for (idx, dev) in self.devices.iter().enumerate() {
+                    if ui
+                        .selectable_label(
+                            self.active_device_index == idx,
+                            format!("{} {}", dev.manufacturer, dev.name),
+                        )
+                        .clicked()
+                    {
+                        self.active_device_index = idx;
+                    }
+                }
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if let Some(dev) = self.devices.get(self.active_device_index) {
+                ui.label(format!(
+                    "Active Controller: {} {} ({} tracks, {} controls, {} LEDs)",
+                    dev.manufacturer,
+                    dev.name,
+                    dev.track_count,
+                    dev.total_control_count(),
+                    dev.leds.len()
+                ));
+            }
+        });
+    }
+}
+
+fn main() -> eframe::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("nkeditor {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--check-init") {
+        let app = NkEditorApp::default();
+        println!(
+            "nkeditor initialized: {} devices registered, theme={}",
+            app.devices.len(),
+            app.theme_settings.preference
+        );
+        return Ok(());
+    }
+
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1280.0, 800.0])
+            .with_min_inner_size([800.0, 600.0])
+            .with_title("nkEditor4 — MIDI Controller & 8opPerc Performance Cockpit"),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "nkEditor4",
+        native_options,
+        Box::new(|cc| Ok(Box::new(NkEditorApp::new(cc)))),
+    )
+}
