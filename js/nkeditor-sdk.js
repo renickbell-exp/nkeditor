@@ -150,3 +150,39 @@ export const OSC_ENDPOINTS = Object.freeze({
   op8Timbre: '/nkeditor/op8/timbre',
   op8SnapshotSave: '/nkeditor/op8/snapshot/save',
 });
+
+/**
+ * Formats a canonical USB-port-independent HardwareFingerprint string:
+ * `vendor_id:product_id:serial:card_name` (e.g. `0944:0117::nanoKONTROL2`).
+ */
+export function formatHardwareFingerprint({
+  vendorId = '0000',
+  productId = '0000',
+  serial = '',
+  cardName = '',
+} = {}) {
+  const v = String(vendorId || '0000').trim().toLowerCase();
+  const p = String(productId || '0000').trim().toLowerCase();
+  const s = String(serial || '').trim();
+  const c = String(cardName || '').trim();
+  return `${v}:${p}:${s}:${c}`;
+}
+
+/**
+ * Parses a canonical `vendor_id:product_id:serial:card_name` string into its components.
+ */
+export function parseHardwareFingerprint(str) {
+  const parts = String(str).trim().split(':');
+  if (parts.length < 4) {
+    throw new Error(`Invalid HardwareFingerprint: ${str}`);
+  }
+  const [vendorId, productId, serial, ...rest] = parts;
+  return {
+    vendorId: vendorId.toLowerCase(),
+    productId: productId.toLowerCase(),
+    serial,
+    cardName: rest.join(':'),
+    usbId: `${vendorId.toLowerCase()}:${productId.toLowerCase()}`,
+  };
+}
+

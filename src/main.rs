@@ -2,6 +2,7 @@
 
 use eframe::egui;
 use nkeditor::devices::{get_all_device_definitions, DeviceDefinition};
+use nkeditor::midi_io::MultiDeviceManager;
 use nkeditor::theme::ThemeSettings;
 
 /// Root application state for the `nkEditor4` desktop application.
@@ -9,15 +10,19 @@ pub struct NkEditorApp {
     pub theme_settings: ThemeSettings,
     pub devices: Vec<DeviceDefinition>,
     pub active_device_index: usize,
+    pub device_manager: MultiDeviceManager,
     theme_dirty: bool,
 }
 
 impl Default for NkEditorApp {
     fn default() -> Self {
+        let mut device_manager = MultiDeviceManager::new();
+        let _ = device_manager.poll_host_hardware();
         Self {
             theme_settings: ThemeSettings::default(),
             devices: get_all_device_definitions(),
             active_device_index: 0,
+            device_manager,
             theme_dirty: true,
         }
     }
@@ -54,18 +59,34 @@ impl eframe::App for NkEditorApp {
                         self.active_device_index = idx;
                     }
                 }
+                ui.separator();
+                ui.label(format!(
+                    "Connected Hardware: {}",
+                    self.device_manager.connected_sessions().len()
+                ));
             });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(dev) = self.devices.get(self.active_device_index) {
                 ui.label(format!(
-                    "Active Controller: {} {} ({} tracks, {} controls, {} LEDs)",
+                    "Active Controller Definition: {} {} ({} tracks, {} controls, {} LEDs)",
                     dev.manufacturer,
                     dev.name,
                     dev.track_count,
                     dev.total_control_count(),
                     dev.leds.len()
+                ));
+            }
+            ui.separator();
+            for session in self.device_manager.connected_sessions() {
+                ui.label(format!(
+                    "Online: {} [{}] ALSA={} RawMIDI={} Preset={}",
+                    session.display_name,
+                    session.fingerprint,
+                    session.alsa_seq_addr.as_deref().unwrap_or("-"),
+                    session.rawmidi_hw_id.as_deref().unwrap_or("-"),
+                    session.active_preset
                 ));
             }
         });
@@ -81,8 +102,9 @@ fn main() -> eframe::Result<()> {
     if args.iter().any(|a| a == "--check-init") {
         let app = NkEditorApp::default();
         println!(
-            "nkeditor initialized: {} devices registered, theme={}",
+            "nkeditor initialized: {} definitions, {} connected hardware controllers, theme={}",
             app.devices.len(),
+            app.device_manager.connected_sessions().len(),
             app.theme_settings.preference
         );
         return Ok(());

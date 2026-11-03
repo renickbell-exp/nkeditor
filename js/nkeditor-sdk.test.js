@@ -7,9 +7,29 @@ import {
   AKAI_MIDIMIX_SPEC,
   NORD_DRUM_2_SPEC,
   OSC_ENDPOINTS,
+  formatHardwareFingerprint,
+  parseHardwareFingerprint,
 } from './nkeditor-sdk.js';
 
-describe('nkEditor4 Companion JavaScript SDK (Epoch 1)', () => {
+describe('nkEditor4 Companion JavaScript SDK (Epochs 1-2)', () => {
+  it('formats and parses USB-port-independent HardwareFingerprints', () => {
+    const fp = formatHardwareFingerprint({
+      vendorId: '0944',
+      productId: '0117',
+      serial: '',
+      cardName: 'nanoKONTROL2',
+    });
+    assert.equal(fp, '0944:0117::nanoKONTROL2');
+    const parsed = parseHardwareFingerprint(fp);
+    assert.deepEqual(parsed, {
+      vendorId: '0944',
+      productId: '0117',
+      serial: '',
+      cardName: 'nanoKONTROL2',
+      usbId: '0944:0117',
+    });
+  });
+
   it('exposes all 15 yaae-theme preference identifiers and 4 twoBowls background presets', () => {
     assert.equal(YAAE_THEMES.length, 15);
     assert.ok(YAAE_THEMES.includes('default'));
