@@ -23,6 +23,13 @@ import {
   decodeOscMessage,
   encodeOscBundle,
   decodeOscPacket,
+  Op8PerformanceModel,
+  mapMidiCCToDensity,
+  mapDensityToMidiCC,
+  mapMidiCCToFeelScale,
+  mapMidiCCToMidimixFeelScale,
+  mapFeelScaleToMidiCC,
+  resolveLaneIndex,
 } from './index.js';
 
 describe('nkEditor4 Companion JavaScript SDK & OSC Codec (Epochs 1-7)', () => {
@@ -322,5 +329,60 @@ describe('nkEditor4 Companion JavaScript SDK & OSC Codec (Epochs 1-7)', () => {
     assert.equal(OSC_ENDPOINTS.op8LaneMute(2), '/nkeditor/op8/lane/2/mute');
     assert.equal(OSC_ENDPOINTS.op8LaneSolo(7), '/nkeditor/op8/lane/7/solo');
     assert.equal(OP8_FAMILY_ORDER.length, 8);
+  });
+
+  it('models 8opPerc density ladder, exact CC 64 = 0.5 feel curve, and Native nanoKONTROL2 / MIDImix Emulation mapping', () => {
+    assert.ok(Math.abs(mapMidiCCToDensity(0) - 0.1) < 1e-12);
+    assert.ok(Math.abs(mapMidiCCToDensity(127) - 5.0) < 1e-12);
+    assert.equal(mapDensityToMidiCC(mapMidiCCToDensity(72)), 72);
+
+    assert.equal(mapMidiCCToFeelScale(0), 0.0);
+    assert.equal(mapMidiCCToFeelScale(64), 0.5);
+    assert.equal(mapMidiCCToFeelScale(127), 1.0);
+    assert.equal(mapMidiCCToMidimixFeelScale(64), 0.5);
+    assert.equal(mapFeelScaleToMidiCC(0.5), 64);
+
+    assert.equal(resolveLaneIndex('kick'), 0);
+    assert.equal(resolveLaneIndex('kicks'), 0);
+    assert.equal(resolveLaneIndex('percussion'), 4);
+    assert.equal(resolveLaneIndex('alt-toms'), 5);
+
+    const model = new Op8PerformanceModel();
+    // Native nanoKONTROL2 Knob 1 (CC 16) -> lane 0 density
+    const dAct = model.applyNanoKontrol2Cc(16, 127);
+    assert.equal(dAct.type, 'SetLaneDensity');
+    assert.equal(dAct.lane, 0);
+    assert.ok(Math.abs(dAct.density - 5.0) < 1e-9);
+
+    // Solo lane 1 (CC 33) -> only lane 1 audible
+    const sAct = model.applyNanoKontrol2Cc(33, 127);
+    assert.equal(sAct.type, 'ToggleLaneSolo');
+    assert.deepEqual(
+      sAct.audibleMask,
+      [false, true, false, false, false, false, false, false]
+    );
+
+    // Track Left (CC 58) -> wrap to form 4096 (index 4095)
+    const fAct = model.applyNanoKontrol2Cc(58, 127);
+    assert.equal(fAct.type, 'NavigateForm');
+    assert.equal(fAct.activeIndex, 4095);
+    assert.equal(fAct.activeFormName, 'form-4096');
+
+    // Cycle (CC 46) -> advance full 8-voice timbre set
+    const cAct = model.applyNanoKontrol2Cc(46, 127);
+    assert.equal(cAct.type, 'AdvanceTimbreSet');
+    assert.equal(cAct.activeSetIndex, 1);
+
+    // Marker Set (CC 60) -> atomic preset pool snapshot capture
+    const snapAct = model.applyNanoKontrol2Cc(60, 127);
+    assert.equal(snapAct.type, 'CapturePresetPoolSnapshot');
+    assert.equal(snapAct.snapshot.id, 'preset-0001');
+    assert.ok(snapAct.snapshot.poolBankIndex >= 0 && snapAct.snapshot.poolBankIndex < 4096);
+
+    // MIDImix Emulation: Marker Set (CC 60) -> 32-CC Send All burst
+    const burst = model.translateNanoKontrol2ToMidimix(60, 127);
+    assert.equal(burst.length, 32);
+    assert.equal(burst[0].controller, 16);
+    assert.equal(burst[31].controller, 61);
   });
 });

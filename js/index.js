@@ -4,3 +4,4 @@
 
 export * from './osc-codec.js';
 export * from './nkeditor-sdk.js';
+export * from './op8-nanokontrol2-mapper.js';
