@@ -10,6 +10,7 @@
 
 pub mod config_parser;
 pub mod devices;
+pub mod diagnostics;
 pub mod hardware;
 pub mod history;
 pub mod konduktiva_view;
