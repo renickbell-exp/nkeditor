@@ -19,5 +19,6 @@ pub mod midi_io;
 pub mod op8_cockpit;
 pub mod op8_model;
 pub mod osc_server;
+pub mod snapshot_pool;
 pub mod theme;
 pub mod ui_editor;

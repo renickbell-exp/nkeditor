@@ -38,6 +38,9 @@ import {
   discoverNanoKontrol2Hardware,
   runNanoKontrol2FormBatchRehearsal,
   DEFAULT_PRESET_POOL_FILENAME,
+  SnapshotPoolManager,
+  LEGACY_MIDIMIX_POOL_FILENAME,
+  normalizeSnapshotRecord,
 } from './index.js';
 
 describe('nkEditor4 Companion JavaScript SDK & OSC Codec (Epochs 1-7)', () => {
@@ -469,6 +472,93 @@ describe('nkEditor4 Companion JavaScript SDK & OSC Codec (Epochs 1-7)', () => {
     } finally {
       await oscClient.close();
       await new Promise((resolve) => oscReceiver.close(resolve));
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('manages JSONL preset pools (nanokontrol2 + legacy midimix), named scene JSON files, voice locks, and beat-synchronized scene morphing', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nkeditor4-epoch14-'));
+    const nk2PoolPath = path.join(tmpDir, DEFAULT_PRESET_POOL_FILENAME);
+    const midimixPoolPath = path.join(tmpDir, LEGACY_MIDIMIX_POOL_FILENAME);
+    const namedJsonPath = path.join(tmpDir, 'gqom-overdrive.scene.json');
+
+    try {
+      const pool = new SnapshotPoolManager();
+      const model = new Op8PerformanceModel();
+
+      // 1. Capture Scene A from live model and persist to nanokontrol2-random-preset-pool.jsonl
+      const sceneA = pool.captureFromModel(model, {
+        id: 'scene-a',
+        label: 'Boot Scene A',
+        rating: 4,
+        favorite: true,
+      });
+      pool.appendSnapshotToJsonlFile(nk2PoolPath, sceneA);
+      assert.ok(fs.existsSync(nk2PoolPath));
+
+      // 2. Write and load a legacy midimix-random-preset-pool.jsonl file (using KONDUKTIVA_FAMILY_ORDER keys)
+      const legacyRecord = {
+        id: 'scene-b',
+        label: 'MidiMix Heavy Scene B',
+        controller: 'akai-midimix',
+        timbres: {
+          kicks: 'kick-thunder',
+          snares: 'snare-anvil',
+          hats: 'hat-razor',
+          toms: 'hat-splash',
+          bells: 'clap-metal',
+          metals: 'tom-sub',
+          noise: 'rim-steel',
+          fx: 'shaker-grit',
+        },
+        densities: [3.0, 2.5, 4.0, 2.0, 2.2, 3.2, 1.8, 3.6],
+        gains: [120, 116, 100, 96, 110, 114, 98, 92],
+        globalDensity: 2.5,
+        feelScale: 0.8,
+      };
+      fs.writeFileSync(midimixPoolPath, `${JSON.stringify(legacyRecord)}\n`, 'utf8');
+      assert.equal(pool.loadJsonlFile(midimixPoolPath), 1);
+
+      // 3. Save and reload named timbre-state JSON file, verify rating & favorite toggle
+      pool.setRating('scene-b', 5);
+      assert.equal(pool.toggleFavorite('scene-b'), true);
+      pool.saveNamedSceneJsonFile(namedJsonPath, 'scene-b');
+      const reloaded = pool.loadNamedSceneJsonFile(namedJsonPath);
+      assert.equal(reloaded.rating, 5);
+      assert.equal(reloaded.favorite, true);
+      assert.equal(reloaded.timbres[4], 'clap-metal');
+
+      // 4. Lock kick (lane 0) and snare (lane 1) while recalling hat/clap/tom from Scene B
+      model.lanes[0].activeTimbre = 'kick-locked-anchor';
+      model.lanes[0].densityMultiplier = 1.25;
+      model.lanes[1].activeTimbre = 'snare-locked-anchor';
+      model.lanes[1].densityMultiplier = 1.5;
+
+      pool.setLaneLock('kick', true);
+      pool.setLaneLock('snare', true);
+
+      const updatedLanes = pool.recallSnapshotIntoModel('scene-b', model);
+      assert.deepEqual(updatedLanes, [2, 3, 4, 5, 6, 7]);
+      assert.equal(model.lanes[0].activeTimbre, 'kick-locked-anchor');
+      assert.equal(model.lanes[1].activeTimbre, 'snare-locked-anchor');
+      assert.equal(model.lanes[2].activeTimbre, 'hat-razor');
+      assert.equal(model.lanes[4].activeTimbre, 'clap-metal');
+      assert.equal(model.lanes[5].activeTimbre, 'tom-sub');
+
+      // 5. Smoothly morph continuous density/macro parameters from Scene A to Scene B over 8 beats
+      pool.startMorph('scene-a', 'scene-b', 8.0, 0.0);
+      const midFrame = pool.advanceMorphBeats(4.0, model);
+      assert.ok(Math.abs(midFrame.progress - 0.5) < 1e-9);
+      // Locked kick stays at 1.25; unlocked hat_closed (lane 2) morphs halfway from 1.0 to 4.0 -> 2.5
+      assert.ok(Math.abs(midFrame.densities[0] - 1.25) < 1e-9);
+      assert.ok(Math.abs(midFrame.densities[2] - 2.5) < 1e-9);
+      assert.ok(Math.abs(midFrame.globalDensity - 1.75) < 1e-9);
+
+      const endFrame = pool.advanceMorphBeats(4.0, model);
+      assert.ok(Math.abs(endFrame.progress - 1.0) < 1e-9);
+      assert.equal(pool.morphState.active, false);
+      assert.ok(Math.abs(endFrame.densities[2] - 4.0) < 1e-9);
+    } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
