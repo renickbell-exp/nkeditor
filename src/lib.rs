@@ -11,6 +11,7 @@
 pub mod config_parser;
 pub mod devices;
 pub mod hardware;
+pub mod konduktiva_view;
 pub mod layer_manager;
 pub mod led_controller;
 pub mod librarian;

@@ -41,6 +41,11 @@ import {
   SnapshotPoolManager,
   LEGACY_MIDIMIX_POOL_FILENAME,
   normalizeSnapshotRecord,
+  KonduktivaBridge,
+  buildRhythmMapLadderData,
+  selectLadderRung,
+  extractPlayerRhythmRow,
+  computeVariationDepth,
 } from './index.js';
 
 describe('nkEditor4 Companion JavaScript SDK & OSC Codec (Epochs 1-7)', () => {
@@ -560,6 +565,59 @@ describe('nkEditor4 Companion JavaScript SDK & OSC Codec (Epochs 1-7)', () => {
       assert.ok(Math.abs(endFrame.densities[2] - 4.0) < 1e-9);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('streams Konduktiva QuantizedMap IOI rhythm rows, mask maps, ladder rungs, and note triggers over UDP OSC', async () => {
+    const oscReceiver = dgram.createSocket('udp4');
+    const packets = [];
+    oscReceiver.on('message', (msg) => {
+      for (const pkt of decodeOscPacket(msg)) {
+        packets.push(pkt);
+      }
+    });
+    await new Promise((resolve) => oscReceiver.bind(0, '127.0.0.1', resolve));
+    const serverPort = oscReceiver.address().port;
+
+    const oscClient = new NkEditorClient({
+      serverHost: '127.0.0.1',
+      serverPort,
+      listenPort: 0,
+    });
+
+    try {
+      await oscClient.connect();
+      const model = new Op8PerformanceModel();
+      const bridge = new KonduktivaBridge({ model, oscClient, keyspan: 4 });
+
+      // 1. Default 1.0x density selects native rung 2 (4 kick onsets in 4 beats)
+      const kickRowDefault = extractPlayerRhythmRow(model, 'kick', { keyspan: 4 });
+      assert.equal(kickRowDefault.selectedRungIndex, 2);
+      assert.deepEqual(kickRowDefault.onsetBeats, [0.0, 1.5, 2.0, 3.25]);
+      assert.deepEqual(kickRowDefault.ioiValues, [1.5, 0.5, 1.25, 0.75]);
+
+      // 2. Boost kick density to 4.0x via Knob 1 (CC 16) -> shifts to dense rung 4
+      model.applyNanoKontrol2Cc(16, 120);
+      const kickRowDense = bridge.syncLane('kick', 0.0);
+      assert.equal(kickRowDense.selectedRungIndex, 4);
+      assert.ok(kickRowDense.onsetBeats.length > 4);
+
+      // 3. Mute snare (lane 1, CC 49) -> maskFlags become all true
+      model.applyNanoKontrol2Cc(49, 127);
+      const snareRowMuted = bridge.syncLane('snare', 0.0);
+      assert.ok(snareRowMuted.maskFlags.every((m) => m === true));
+
+      // 4. Step beat window [0.0, 2.0] and verify note triggers fire for unmasked lanes and stream over OSC
+      const fired = bridge.stepBeatWindow(0.0, 2.0);
+      assert.ok(fired.length >= 6);
+      assert.ok(!fired.some((ev) => ev.family === 'snare')); // muted snare never fires
+
+      await new Promise((r) => setTimeout(r, 25));
+      assert.ok(packets.some((p) => p.addr === '/nkeditor/konduktiva/lane/0/rhythm'));
+      assert.ok(packets.some((p) => p.addr === '/nkeditor/konduktiva/lane/0/trigger'));
+    } finally {
+      await oscClient.close();
+      await new Promise((resolve) => oscReceiver.close(resolve));
     }
   });
 });
