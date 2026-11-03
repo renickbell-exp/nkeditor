@@ -19,6 +19,7 @@ pub mod led_controller;
 pub mod librarian;
 pub mod mapping_engine;
 pub mod midi_io;
+pub mod multi_device_router;
 pub mod op8_cockpit;
 pub mod op8_model;
 pub mod osc_server;

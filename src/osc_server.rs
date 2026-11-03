@@ -248,6 +248,8 @@ pub enum OscCommand {
     Op8LaneSolo { lane_index: usize, soloed: bool },
     /// `/nkeditor/op8/snapshot/save [label]`
     Op8SaveSnapshot { label: Option<String> },
+    /// `/nkeditor/panic` — Emergency All Notes Off, sustain reset, mute all 8opPerc lanes, and LED resync
+    Panic,
 }
 
 /// Parses a `rosc::OscMessage` into a typed [`OscCommand`].
@@ -255,6 +257,7 @@ pub fn parse_osc_message(msg: &OscMessage) -> Result<OscCommand, String> {
     let addr = msg.addr.trim();
     match addr {
         "/nkeditor/status" => Ok(OscCommand::QueryStatus),
+        "/nkeditor/panic" => Ok(OscCommand::Panic),
         "/nkeditor/device/list" => Ok(OscCommand::QueryDeviceList),
         "/nkeditor/device/select" => {
             let device_id = arg_as_string(msg.args.first())
@@ -800,6 +803,23 @@ impl OscServer {
                     addr: "/nkeditor/op8/snapshot/save".to_string(),
                     args: vec![OscType::String(snap_label)],
                 });
+            }
+            OscCommand::Panic => {
+                op8_state.playing = false;
+                op8_state.recording = false;
+                for lane in &mut op8_state.lanes {
+                    lane.muted = true;
+                    lane.soloed = false;
+                }
+                let keys: Vec<String> = led_manager.controllers.keys().cloned().collect();
+                for key in &keys {
+                    sync_op8_to_leds(op8_state, led_manager, key);
+                }
+                let _ = self.broadcast_message(OscMessage {
+                    addr: "/nkeditor/panic".to_string(),
+                    args: vec![OscType::String("all_notes_off_and_muted".to_string())],
+                });
+                self.broadcast_op8_state(op8_state);
             }
         }
     }
