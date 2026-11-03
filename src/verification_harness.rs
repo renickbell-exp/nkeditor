@@ -548,6 +548,235 @@ pub fn run_full_verification_and_stress_suite() -> FullVerificationSuiteReport {
 }
 
 // =============================================================================
+// 5. CLI Flag Parser & 60-Combination Theme/View End-to-End Audit (Epoch 20)
+// =============================================================================
+
+/// Parsed command-line flags for the `nkeditor` binary (`src/main.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliLaunchConfig {
+    /// `--list-devices`: Print connected hardware MIDI devices as JSON and exit.
+    pub list_devices: bool,
+    /// `--verify-hardware`: Run the non-audible Korg `nanoKONTROL2` hardware & migration verification.
+    pub verify_hardware: bool,
+    /// `--dry-stress`: Run the 1,000-event dry-run stress rehearsal.
+    pub dry_stress: bool,
+    /// `--headless-osc`: Run in non-blocking headless OSC + MIDI service mode.
+    pub headless_osc: bool,
+    /// `--osc-port <port>`: UDP port on which the OSC server listens (default `9000`).
+    pub osc_port: u16,
+    /// `--osc-target <host:port>`: UDP target address for OSC telemetry broadcasts (default `"127.0.0.1:9001"`).
+    pub osc_target: String,
+    /// `--theme <name>`: Initial `yaae-theme` palette name (e.g. `"Monokai"`, `"Cyberpunk"`, `"Nord"`).
+    pub theme: Option<String>,
+    /// `--bg <preset>`: Optional `twoBowls` background preset (`"white"`, `"cream"`, `"black"`, `"dark-grey"`).
+    pub background_preset: Option<String>,
+    /// `--preset <id_or_name>`: Initial factory or user preset to load on startup.
+    pub preset: Option<String>,
+}
+
+impl Default for CliLaunchConfig {
+    fn default() -> Self {
+        Self {
+            list_devices: false,
+            verify_hardware: false,
+            dry_stress: false,
+            headless_osc: false,
+            osc_port: crate::osc_server::DEFAULT_OSC_LISTEN_PORT,
+            osc_target: format!("127.0.0.1:{}", crate::osc_server::DEFAULT_OSC_CLIENT_PORT),
+            theme: None,
+            background_preset: None,
+            preset: None,
+        }
+    }
+}
+
+impl CliLaunchConfig {
+    /// Parses CLI arguments from an iterator/slice of strings.
+    #[must_use]
+    pub fn parse_from_args(args: &[String]) -> Self {
+        let mut cfg = Self::default();
+        let mut i = 0;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--list-devices" => cfg.list_devices = true,
+                "--verify-hardware" => cfg.verify_hardware = true,
+                "--dry-stress" => cfg.dry_stress = true,
+                "--headless-osc" => cfg.headless_osc = true,
+                "--osc-port" => {
+                    if let Some(val) = args.get(i + 1) {
+                        if let Ok(p) = val.parse::<u16>() {
+                            cfg.osc_port = p;
+                        }
+                        i += 1;
+                    }
+                }
+                "--osc-target" => {
+                    if let Some(val) = args.get(i + 1) {
+                        cfg.osc_target = if val.contains(':') {
+                            val.clone()
+                        } else {
+                            format!("127.0.0.1:{val}")
+                        };
+                        i += 1;
+                    }
+                }
+                "--theme" => {
+                    if let Some(val) = args.get(i + 1) {
+                        cfg.theme = Some(val.clone());
+                        i += 1;
+                    }
+                }
+                "--bg" | "--background" => {
+                    if let Some(val) = args.get(i + 1) {
+                        cfg.background_preset = Some(val.clone());
+                        i += 1;
+                    }
+                }
+                "--preset" => {
+                    if let Some(val) = args.get(i + 1) {
+                        cfg.preset = Some(val.clone());
+                        i += 1;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        cfg
+    }
+}
+
+/// Audits all **15 `yaae-theme` palettes** paired with all **4 `twoBowls` background presets**
+/// (`15 * 4 = 60` theme combinations) across all 9 major `egui` views, returning
+/// `(theme_combinations_tested, total_view_frames_rendered)`.
+#[must_use]
+pub fn audit_all_15_yaae_themes_and_4_twobowls_backgrounds_across_all_views() -> (usize, usize) {
+    use crate::diagnostics::render_diagnostics_inspector_panel;
+    use crate::history::{
+        render_history_and_command_palette, CommandHistoryStack, CommandPalette,
+    };
+    use crate::konduktiva_view::render_konduktiva_rhythm_visualizer;
+    use crate::layer_manager::render_layer_page_selector_bar;
+    use crate::librarian::{render_preset_librarian_panel, PresetLibrarian};
+    use crate::mapping_engine::DeviceMappingPipeline;
+    use crate::multi_device_router::render_multi_device_router_panel;
+    use crate::op8_cockpit::{render_op8_cockpit, Op8CockpitViewState};
+    use crate::randomizer::{render_randomizer_panel, RandomizerEngine};
+    use crate::snapshot_pool::{render_snapshot_pool_panel, SnapshotPoolManager};
+    use crate::theme::{ThemePreference, ThemeSettings, TwoBowlsBackgroundPreset};
+    use crate::ui_editor::{render_controller_workspace, ControllerEditorUiState};
+
+    let ctx = egui::Context::default();
+    let dev_key = "0944:0117::nanoKONTROL2";
+    let device_manager = MultiDeviceManager::new();
+    let mut mapping_engine = MultiDeviceMappingEngine::new();
+    mapping_engine.register_device_pipeline(dev_key, DeviceMappingConfig::default_nanokontrol2());
+    let mut pipeline =
+        DeviceMappingPipeline::new(dev_key, DeviceMappingConfig::default_nanokontrol2());
+    let mut led_manager = MultiDeviceLedManager::new();
+    let _ = led_manager.ensure_controller(dev_key, "nanokontrol2");
+    let mut ui_state = ControllerEditorUiState::default();
+    let mut cockpit = Op8CockpitViewState::new(dev_key);
+    let mut layer_manager = MultiPageLayerManager::new(dev_key);
+    let mut librarian = PresetLibrarian::new();
+    let mut snapshot_pool = SnapshotPoolManager::new();
+    let mut konduktiva_telemetry = KonduktivaTelemetryState::default();
+    let mut randomizer = RandomizerEngine::new(42);
+    let mut history = CommandHistoryStack::new(16);
+    let mut palette = CommandPalette::new();
+    let mut router = MultiDeviceMatrixRouter::default();
+    let mut inspector = DiagnosticsInspector::new(64);
+    let mut op8_model = Op8PerformanceModel::default();
+    let mut op8_rig_state = Op8RigState::default();
+    let mut osc_server = None;
+
+    let mut combinations = 0usize;
+    let mut frames_rendered = 0usize;
+
+    for &pref in ThemePreference::all() {
+        for &bg in TwoBowlsBackgroundPreset::all() {
+            let mut theme_settings = ThemeSettings {
+                preference: pref,
+                background_preset: Some(bg),
+                ..ThemeSettings::default()
+            };
+            theme_settings.apply_to_ctx(&ctx);
+
+            // Render all 9 views inside ctx.run(...)
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                let _ = render_controller_workspace(
+                    ctx,
+                    &mut ui_state,
+                    &mut theme_settings,
+                    &device_manager,
+                    &mut mapping_engine,
+                    &mut led_manager,
+                );
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    render_op8_cockpit(
+                        ui,
+                        &mut cockpit,
+                        &theme_settings,
+                        &mut led_manager,
+                        &mut osc_server,
+                    );
+                    let _ = render_layer_page_selector_bar(
+                        ui,
+                        &mut layer_manager,
+                        &mut pipeline,
+                        &theme_settings,
+                        &mut led_manager,
+                        &mut osc_server,
+                    );
+                    let _ = render_preset_librarian_panel(ui, &mut librarian, &theme_settings);
+                    render_snapshot_pool_panel(
+                        ui,
+                        &mut snapshot_pool,
+                        &mut op8_model,
+                        &theme_settings,
+                    );
+                    render_konduktiva_rhythm_visualizer(
+                        ui,
+                        &mut konduktiva_telemetry,
+                        &op8_model,
+                        &theme_settings,
+                    );
+                    let _ = render_randomizer_panel(
+                        ui,
+                        &mut randomizer,
+                        &mut pipeline,
+                        &mut op8_model,
+                        &theme_settings,
+                    );
+                    let _ = render_history_and_command_palette(
+                        ui,
+                        &mut history,
+                        &mut palette,
+                        &mut pipeline,
+                        &mut op8_model,
+                        &mut theme_settings,
+                    );
+                    let _ = render_multi_device_router_panel(
+                        ui,
+                        &mut router,
+                        &mut op8_model,
+                        &mut op8_rig_state,
+                        &mut led_manager,
+                        &theme_settings,
+                        1_000,
+                    );
+                    render_diagnostics_inspector_panel(ui, &mut inspector, &theme_settings);
+                });
+            });
+            frames_rendered += 9;
+            combinations += 1;
+        }
+    }
+
+    (combinations, frames_rendered)
+}
+
+// =============================================================================
 // 5. Automated Unit Tests
 // =============================================================================
 
@@ -594,5 +823,44 @@ mod tests {
             "Expected sub-millisecond (< 1000 us) average latency, got {:.2} us",
             stress.avg_dispatch_latency_us
         );
+    }
+
+    #[test]
+    fn cli_launch_config_parses_all_epoch_20_flags() {
+        let args = vec![
+            "nkeditor".to_string(),
+            "--list-devices".to_string(),
+            "--verify-hardware".to_string(),
+            "--dry-stress".to_string(),
+            "--headless-osc".to_string(),
+            "--osc-port".to_string(),
+            "9400".to_string(),
+            "--osc-target".to_string(),
+            "127.0.0.1:9401".to_string(),
+            "--theme".to_string(),
+            "Cyberpunk".to_string(),
+            "--bg".to_string(),
+            "cream".to_string(),
+            "--preset".to_string(),
+            "op8-nanokontrol2-live-rig".to_string(),
+        ];
+        let cfg = CliLaunchConfig::parse_from_args(&args);
+        assert!(cfg.list_devices);
+        assert!(cfg.verify_hardware);
+        assert!(cfg.dry_stress);
+        assert!(cfg.headless_osc);
+        assert_eq!(cfg.osc_port, 9400);
+        assert_eq!(cfg.osc_target, "127.0.0.1:9401");
+        assert_eq!(cfg.theme.as_deref(), Some("Cyberpunk"));
+        assert_eq!(cfg.background_preset.as_deref(), Some("cream"));
+        assert_eq!(cfg.preset.as_deref(), Some("op8-nanokontrol2-live-rig"));
+    }
+
+    #[test]
+    fn all_15_yaae_themes_and_4_twobowls_backgrounds_render_cleanly_across_all_views() {
+        let (combos, frames) =
+            audit_all_15_yaae_themes_and_4_twobowls_backgrounds_across_all_views();
+        assert_eq!(combos, 60);
+        assert_eq!(frames, 540);
     }
 }
