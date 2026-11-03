@@ -190,6 +190,8 @@ export const RESPONSE_CURVES = Object.freeze(['linear', 'exponential', 'logarith
 
 export const SOFT_TAKEOVER_MODES = Object.freeze(['catch', 'jump', 'pickup']);
 
+export const LED_OPERATING_MODES = Object.freeze(['internal', 'external', 'op8_cockpit']);
+
 /**
  * Mirrors `ResponseCurve::transform_value` in `src/mapping_engine.rs`.
  */

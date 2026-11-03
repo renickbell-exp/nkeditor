@@ -2,6 +2,7 @@
 
 use eframe::egui;
 use nkeditor::devices::{get_all_device_definitions, get_device_definition, DeviceDefinition};
+use nkeditor::led_controller::MultiDeviceLedManager;
 use nkeditor::mapping_engine::{DeviceMappingConfig, MultiDeviceMappingEngine};
 use nkeditor::midi_io::MultiDeviceManager;
 use nkeditor::theme::ThemeSettings;
@@ -13,6 +14,7 @@ pub struct NkEditorApp {
     pub active_device_index: usize,
     pub device_manager: MultiDeviceManager,
     pub mapping_engine: MultiDeviceMappingEngine,
+    pub led_manager: MultiDeviceLedManager,
     theme_dirty: bool,
 }
 
@@ -21,6 +23,7 @@ impl Default for NkEditorApp {
         let mut device_manager = MultiDeviceManager::new();
         let _ = device_manager.poll_host_hardware();
         let mut mapping_engine = MultiDeviceMappingEngine::new();
+        let mut led_manager = MultiDeviceLedManager::new();
         for (key, session) in &device_manager.sessions {
             if let Some(ref def_id) = session.definition_id {
                 if let Some(def) = get_device_definition(def_id) {
@@ -28,6 +31,7 @@ impl Default for NkEditorApp {
                         key.clone(),
                         DeviceMappingConfig::from_device_definition(&def),
                     );
+                    let _ = led_manager.ensure_controller(key, def_id);
                 }
             }
         }
@@ -37,6 +41,7 @@ impl Default for NkEditorApp {
             active_device_index: 0,
             device_manager,
             mapping_engine,
+            led_manager,
             theme_dirty: true,
         }
     }

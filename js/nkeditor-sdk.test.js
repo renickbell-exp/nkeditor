@@ -9,15 +9,17 @@ import {
   OSC_ENDPOINTS,
   RESPONSE_CURVES,
   SOFT_TAKEOVER_MODES,
+  LED_OPERATING_MODES,
   formatHardwareFingerprint,
   parseHardwareFingerprint,
   transformContinuousValue,
 } from './nkeditor-sdk.js';
 
-describe('nkEditor4 Companion JavaScript SDK (Epochs 1-3)', () => {
-  it('supports continuous response curves, min/max scaling, and polarity inversion matching Rust mapping_engine', () => {
+describe('nkEditor4 Companion JavaScript SDK (Epochs 1-4)', () => {
+  it('supports continuous response curves, min/max scaling, polarity inversion, and LED modes', () => {
     assert.deepEqual(RESPONSE_CURVES, ['linear', 'exponential', 'logarithmic', 's_curve']);
     assert.deepEqual(SOFT_TAKEOVER_MODES, ['catch', 'jump', 'pickup']);
+    assert.deepEqual(LED_OPERATING_MODES, ['internal', 'external', 'op8_cockpit']);
     assert.equal(transformContinuousValue(0, { minValue: 20, maxValue: 100 }), 20);
     assert.equal(transformContinuousValue(127, { minValue: 20, maxValue: 100 }), 100);
     assert.equal(transformContinuousValue(0, { minValue: 20, maxValue: 100, invert: true }), 100);
