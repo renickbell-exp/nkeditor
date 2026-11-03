@@ -13,6 +13,7 @@ pub mod hardware;
 pub mod led_controller;
 pub mod mapping_engine;
 pub mod midi_io;
+pub mod op8_cockpit;
 pub mod op8_model;
 pub mod osc_server;
 pub mod theme;

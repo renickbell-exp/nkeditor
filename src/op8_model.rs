@@ -285,6 +285,9 @@ pub struct Op8VoiceLane {
     pub muted: bool,
     /// Whether this lane is soloed (`trackN.solo`).
     pub soloed: bool,
+    /// Whether this lane's timbre is locked (preventing global timbre set changes from overwriting it).
+    #[serde(default)]
+    pub timbre_locked: bool,
     /// Currently sounding FM timbre preset name.
     pub active_timbre: String,
     /// Preloaded/queued FM timbre preset scheduled for the next bar boundary (`None` if already active).
@@ -310,6 +313,7 @@ impl Op8VoiceLane {
             gain_normalized: f64::from(default_gain_cc) / 127.0,
             muted: false,
             soloed: false,
+            timbre_locked: false,
             active_timbre: DEFAULT_BOOT_PATCHES[idx].to_string(),
             queued_timbre: None,
             reroll_count: 0,
@@ -776,6 +780,9 @@ impl Op8PerformanceModel {
         }
         let set_num = self.timbre_bank.active_set_index + 1;
         for lane in &mut self.lanes {
+            if lane.timbre_locked {
+                continue;
+            }
             let next_name = format!("{}-set-{:04}", lane.family, set_num);
             lane.schedule_timbre(next_name, !self.queue_timbres_for_next_bar);
         }
