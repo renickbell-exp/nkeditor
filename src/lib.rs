@@ -4,7 +4,8 @@
 //! definitions ([`devices`]), port-independent USB/ALSA hardware discovery
 //! ([`hardware`]), simultaneous multi-device MIDI controller management
 //! ([`midi_io`]), the multi-device MIDI remapping engine ([`mapping_engine`]),
-//! and the hardware LED controller ([`led_controller`]).
+//! the hardware LED controller ([`led_controller`]), and the interactive
+//! `egui` controller surface and visual mapping inspector ([`ui_editor`]).
 
 pub mod devices;
 pub mod hardware;
@@ -12,3 +13,4 @@ pub mod led_controller;
 pub mod mapping_engine;
 pub mod midi_io;
 pub mod theme;
+pub mod ui_editor;

@@ -6,6 +6,7 @@ use nkeditor::led_controller::MultiDeviceLedManager;
 use nkeditor::mapping_engine::{DeviceMappingConfig, MultiDeviceMappingEngine};
 use nkeditor::midi_io::MultiDeviceManager;
 use nkeditor::theme::ThemeSettings;
+use nkeditor::ui_editor::{render_controller_workspace, ControllerEditorUiState};
 
 /// Root application state for the `nkEditor4` desktop application.
 pub struct NkEditorApp {
@@ -15,6 +16,7 @@ pub struct NkEditorApp {
     pub device_manager: MultiDeviceManager,
     pub mapping_engine: MultiDeviceMappingEngine,
     pub led_manager: MultiDeviceLedManager,
+    pub ui_state: ControllerEditorUiState,
     theme_dirty: bool,
 }
 
@@ -24,6 +26,7 @@ impl Default for NkEditorApp {
         let _ = device_manager.poll_host_hardware();
         let mut mapping_engine = MultiDeviceMappingEngine::new();
         let mut led_manager = MultiDeviceLedManager::new();
+        let mut ui_state = ControllerEditorUiState::default();
         for (key, session) in &device_manager.sessions {
             if let Some(ref def_id) = session.definition_id {
                 if let Some(def) = get_device_definition(def_id) {
@@ -32,6 +35,7 @@ impl Default for NkEditorApp {
                         DeviceMappingConfig::from_device_definition(&def),
                     );
                     let _ = led_manager.ensure_controller(key, def_id);
+                    ui_state.select_device(key.clone(), def_id);
                 }
             }
         }
@@ -42,6 +46,7 @@ impl Default for NkEditorApp {
             device_manager,
             mapping_engine,
             led_manager,
+            ui_state,
             theme_dirty: true,
         }
     }
@@ -63,52 +68,16 @@ impl eframe::App for NkEditorApp {
             self.theme_dirty = false;
         }
 
-        egui::TopBottomPanel::top("nkeditor_header").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("nkEditor4");
-                ui.separator();
-                for (idx, dev) in self.devices.iter().enumerate() {
-                    if ui
-                        .selectable_label(
-                            self.active_device_index == idx,
-                            format!("{} {}", dev.manufacturer, dev.name),
-                        )
-                        .clicked()
-                    {
-                        self.active_device_index = idx;
-                    }
-                }
-                ui.separator();
-                ui.label(format!(
-                    "Connected Hardware: {}",
-                    self.device_manager.connected_sessions().len()
-                ));
-            });
-        });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(dev) = self.devices.get(self.active_device_index) {
-                ui.label(format!(
-                    "Active Controller Definition: {} {} ({} tracks, {} controls, {} LEDs)",
-                    dev.manufacturer,
-                    dev.name,
-                    dev.track_count,
-                    dev.total_control_count(),
-                    dev.leds.len()
-                ));
-            }
-            ui.separator();
-            for session in self.device_manager.connected_sessions() {
-                ui.label(format!(
-                    "Online: {} [{}] ALSA={} RawMIDI={} Preset={}",
-                    session.display_name,
-                    session.fingerprint,
-                    session.alsa_seq_addr.as_deref().unwrap_or("-"),
-                    session.rawmidi_hw_id.as_deref().unwrap_or("-"),
-                    session.active_preset
-                ));
-            }
-        });
+        if render_controller_workspace(
+            ctx,
+            &mut self.ui_state,
+            &mut self.theme_settings,
+            &self.device_manager,
+            &mut self.mapping_engine,
+            &mut self.led_manager,
+        ) {
+            self.theme_dirty = true;
+        }
     }
 }
 
