@@ -7,6 +7,7 @@ import {
   AKAI_MIDIMIX_SPEC,
   NORD_DRUM_2_SPEC,
   OSC_ENDPOINTS,
+  OP8_FAMILY_ORDER,
   RESPONSE_CURVES,
   SOFT_TAKEOVER_MODES,
   LED_OPERATING_MODES,
@@ -98,5 +99,9 @@ describe('nkEditor4 Companion JavaScript SDK (Epochs 1-4)', () => {
     assert.equal(NORD_DRUM_2_SPEC.fx.DIST_AMOUNT, 23);
     assert.equal(NORD_DRUM_2_SPEC.channels.GLOBAL_FX, 10);
     assert.equal(OSC_ENDPOINTS.status, '/nkeditor/status');
+    assert.equal(OSC_ENDPOINTS.op8LaneDensity(0), '/nkeditor/op8/lane/0/density');
+    assert.equal(OSC_ENDPOINTS.op8LaneMute(2), '/nkeditor/op8/lane/2/mute');
+    assert.equal(OSC_ENDPOINTS.op8LaneSolo(7), '/nkeditor/op8/lane/7/solo');
+    assert.equal(OP8_FAMILY_ORDER.length, 8);
   });
 });

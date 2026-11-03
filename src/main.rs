@@ -5,6 +5,7 @@ use nkeditor::devices::{get_all_device_definitions, get_device_definition, Devic
 use nkeditor::led_controller::MultiDeviceLedManager;
 use nkeditor::mapping_engine::{DeviceMappingConfig, MultiDeviceMappingEngine};
 use nkeditor::midi_io::MultiDeviceManager;
+use nkeditor::osc_server::{Op8RigState, OscServer};
 use nkeditor::theme::ThemeSettings;
 use nkeditor::ui_editor::{render_controller_workspace, ControllerEditorUiState};
 
@@ -17,6 +18,8 @@ pub struct NkEditorApp {
     pub mapping_engine: MultiDeviceMappingEngine,
     pub led_manager: MultiDeviceLedManager,
     pub ui_state: ControllerEditorUiState,
+    pub op8_state: Op8RigState,
+    pub osc_server: Option<OscServer>,
     theme_dirty: bool,
 }
 
@@ -47,6 +50,8 @@ impl Default for NkEditorApp {
             mapping_engine,
             led_manager,
             ui_state,
+            op8_state: Op8RigState::default(),
+            osc_server: OscServer::bind_default().ok(),
             theme_dirty: true,
         }
     }
@@ -63,6 +68,20 @@ impl NkEditorApp {
 
 impl eframe::App for NkEditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(ref mut osc) = self.osc_server {
+            let cmds = osc.poll_and_dispatch(
+                &mut self.ui_state,
+                &mut self.theme_settings,
+                &mut self.device_manager,
+                &mut self.mapping_engine,
+                &mut self.led_manager,
+                &mut self.op8_state,
+            );
+            if !cmds.is_empty() {
+                self.theme_dirty = true;
+            }
+        }
+
         if self.theme_dirty {
             self.theme_settings.apply_to_ctx(ctx);
             self.theme_dirty = false;

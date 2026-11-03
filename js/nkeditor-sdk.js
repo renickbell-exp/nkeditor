@@ -149,7 +149,21 @@ export const OSC_ENDPOINTS = Object.freeze({
   op8Form: '/nkeditor/op8/form',
   op8Timbre: '/nkeditor/op8/timbre',
   op8SnapshotSave: '/nkeditor/op8/snapshot/save',
+  op8LaneDensity: (index) => `/nkeditor/op8/lane/${index}/density`,
+  op8LaneMute: (index) => `/nkeditor/op8/lane/${index}/mute`,
+  op8LaneSolo: (index) => `/nkeditor/op8/lane/${index}/solo`,
 });
+
+export const OP8_FAMILY_ORDER = Object.freeze([
+  'kick',
+  'snare',
+  'hat_closed',
+  'hat_open',
+  'clap',
+  'tom',
+  'rim',
+  'cymbal',
+]);
 
 /**
  * Formats a canonical USB-port-independent HardwareFingerprint string:
