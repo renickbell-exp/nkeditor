@@ -11,6 +11,7 @@
 pub mod config_parser;
 pub mod devices;
 pub mod hardware;
+pub mod history;
 pub mod konduktiva_view;
 pub mod layer_manager;
 pub mod led_controller;
@@ -20,6 +21,7 @@ pub mod midi_io;
 pub mod op8_cockpit;
 pub mod op8_model;
 pub mod osc_server;
+pub mod randomizer;
 pub mod snapshot_pool;
 pub mod theme;
 pub mod ui_editor;
