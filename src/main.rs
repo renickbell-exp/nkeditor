@@ -116,6 +116,15 @@ fn main() -> eframe::Result<()> {
         );
         return Ok(());
     }
+    let verify_hw = args.iter().any(|a| a == "--verify-hardware");
+    let dry_stress = args.iter().any(|a| a == "--dry-stress");
+    if verify_hw || dry_stress {
+        let report = nkeditor::verification_harness::run_full_verification_and_stress_suite();
+        if let Ok(json) = serde_json::to_string_pretty(&report) {
+            println!("{json}");
+        }
+        return Ok(());
+    }
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

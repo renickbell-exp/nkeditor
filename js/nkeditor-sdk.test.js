@@ -46,6 +46,7 @@ import {
   selectLadderRung,
   extractPlayerRhythmRow,
   computeVariationDepth,
+  runNanoKontrol2VerificationAndStress,
 } from './index.js';
 
 describe('nkEditor4 Companion JavaScript SDK & OSC Codec (Epochs 1-7)', () => {
@@ -619,5 +620,23 @@ describe('nkEditor4 Companion JavaScript SDK & OSC Codec (Epochs 1-7)', () => {
       await oscClient.close();
       await new Promise((resolve) => oscReceiver.close(resolve));
     }
+  });
+
+  it('executes non-audible nanoKONTROL2 hardware verification, 4-port USB migration, and 1,000-event dry stress rehearsal', () => {
+    const report = runNanoKontrol2VerificationAndStress();
+    assert.equal(report.hostHardware.usbId, '0944:0117');
+    assert.equal(report.hostHardware.canonicalFingerprint, '0944:0117::nanoKONTROL2');
+    assert.equal(report.hostHardware.byIdSymlink, 'usb-KORG_INC._nanoKONTROL2-00');
+    assert.equal(report.hostHardware.ledReadyPacketCount, 28);
+
+    assert.equal(report.usbMigration.hops.length, 4);
+    assert.equal(report.usbMigration.recognitionRatePct, 100.0);
+    assert.equal(report.usbMigration.finalSessionCount, 1);
+
+    assert.equal(report.stressRehearsal.totalEventsDispatched, 1000);
+    assert.equal(report.stressRehearsal.totalEventsProcessed, 1000);
+    assert.equal(report.stressRehearsal.droppedEvents, 0);
+    assert.equal(report.stressRehearsal.liveAudioStarted, false);
+    assert.ok(report.stressRehearsal.avgDispatchLatencyUs < 1000.0);
   });
 });

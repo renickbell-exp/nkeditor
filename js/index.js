@@ -9,3 +9,4 @@ export * from './pulsed-nanokontrol2-rig.js';
 export * from './audible-form-batch-nanokontrol2-live.js';
 export * from './snapshot-pool-manager.js';
 export * from './konduktiva-bridge.js';
+export * from './stress-test-nanokontrol2.js';

@@ -27,3 +27,4 @@ pub mod randomizer;
 pub mod snapshot_pool;
 pub mod theme;
 pub mod ui_editor;
+pub mod verification_harness;
