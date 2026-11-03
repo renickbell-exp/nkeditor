@@ -156,6 +156,7 @@ export const OSC_ENDPOINTS = Object.freeze({
   controlSet: '/nkeditor/control/set',
   ledSet: '/nkeditor/led/set',
   themeSet: '/nkeditor/theme/set',
+  layerSelect: '/nkeditor/layer/select',
   op8State: '/nkeditor/op8/state',
   op8Form: '/nkeditor/op8/form',
   op8Timbre: '/nkeditor/op8/timbre',
@@ -508,6 +509,10 @@ export class NkEditorClient extends EventEmitter {
       args.push(String(backgroundPreset));
     }
     await this.sendOsc(OSC_ENDPOINTS.themeSet, args);
+  }
+
+  async selectLayer(page) {
+    await this.sendOsc(OSC_ENDPOINTS.layerSelect, [String(page)]);
   }
 
   // ---------------------------------------------------------------------------

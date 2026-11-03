@@ -229,6 +229,8 @@ pub enum OscCommand {
         theme_name: String,
         background_preset: Option<String>,
     },
+    /// `/nkeditor/layer/select <page_1_to_4_or_name>`
+    SelectLayer { page: String },
     /// `/nkeditor/op8/state [json_snapshot]`
     Op8State { payload_json: Option<String> },
     /// `/nkeditor/op8/form <direction_or_name>`
@@ -315,6 +317,11 @@ pub fn parse_osc_message(msg: &OscMessage) -> Result<OscCommand, String> {
                 theme_name,
                 background_preset,
             })
+        }
+        "/nkeditor/layer/select" => {
+            let page = arg_as_string(msg.args.first())
+                .ok_or_else(|| "/nkeditor/layer/select requires <page>".to_string())?;
+            Ok(OscCommand::SelectLayer { page })
         }
         "/nkeditor/op8/state" => {
             let payload_json = arg_as_string(msg.args.first());
@@ -709,6 +716,12 @@ impl OscServer {
                     args: vec![OscType::String(
                         theme_settings.preference.display_name().to_string(),
                     )],
+                });
+            }
+            OscCommand::SelectLayer { page } => {
+                let _ = self.broadcast_message(OscMessage {
+                    addr: "/nkeditor/layer/select".to_string(),
+                    args: vec![OscType::String(page.clone())],
                 });
             }
             OscCommand::Op8State { payload_json } => {

@@ -10,6 +10,7 @@
 
 pub mod devices;
 pub mod hardware;
+pub mod layer_manager;
 pub mod led_controller;
 pub mod mapping_engine;
 pub mod midi_io;
