@@ -1108,4 +1108,87 @@ mod tests {
         assert!(recv_addrs.contains(&"/nkeditor/op8/snapshot/save".to_string()));
         assert!(recv_addrs.contains(&"/nkeditor/control/set".to_string()));
     }
+
+    #[test]
+    fn test_rust_to_node_sdk_osc_udp_roundtrip() {
+        use std::process::Command;
+
+        // Bind Rust OscServer on an ephemeral port
+        let mut server = OscServer::bind("127.0.0.1:0", Vec::new()).expect("bind Rust OscServer");
+        let server_port = server.listen_addr.port();
+
+        let mut ui_state = ControllerEditorUiState::default();
+        let mut theme_settings = ThemeSettings::default();
+        let mut device_manager = MultiDeviceManager::new();
+        let mut mapping_engine = MultiDeviceMappingEngine::new();
+        let mut led_manager = MultiDeviceLedManager::new();
+        let mut op8_state = Op8RigState::default();
+
+        mapping_engine.register_device_pipeline(
+            "nanokontrol2",
+            DeviceMappingConfig::from_device_definition(&nanokontrol2_definition()),
+        );
+        let _ = led_manager.ensure_controller("nanokontrol2", "nanokontrol2");
+
+        // Run a Node.js child process that uses js/index.js (NkEditorClient) to send OSC commands to Rust
+        let js_script = format!(
+            r#"
+            import {{ NkEditorClient }} from './js/index.js';
+            const client = new NkEditorClient({{
+              serverHost: '127.0.0.1',
+              serverPort: {server_port},
+              listenHost: '127.0.0.1',
+              listenPort: 0,
+            }});
+            await client.connect();
+            await client.setTheme('solarized_dark', 'dark_grey');
+            await client.setControl(1, 'knob', 108);
+            await client.setLed('track1.solo', true);
+            await client.setOp8LaneDensity(0, 4.25);
+            await client.navigateOp8Form('next');
+            await client.close();
+            "#
+        );
+
+        let status = Command::new("node")
+            .args(["--input-type=module", "-e", &js_script])
+            .status()
+            .expect("spawn node for OSC roundtrip");
+        assert!(status.success(), "Node.js NkEditorClient script must succeed");
+
+        let dispatched = server.poll_and_dispatch(
+            &mut ui_state,
+            &mut theme_settings,
+            &mut device_manager,
+            &mut mapping_engine,
+            &mut led_manager,
+            &mut op8_state,
+        );
+
+        assert_eq!(dispatched.len(), 5);
+        assert_eq!(theme_settings.preference, ThemePreference::SolarizedDark);
+        assert_eq!(
+            theme_settings.background_preset,
+            Some(TwoBowlsBackgroundPreset::DarkGrey)
+        );
+        assert_eq!(
+            mapping_engine
+                .pipelines
+                .get("nanokontrol2")
+                .unwrap()
+                .soft_takeover_status("track1.knob")
+                .unwrap()
+                .target_value,
+            108
+        );
+        assert!(
+            led_manager
+                .controllers
+                .get("nanokontrol2")
+                .unwrap()
+                .led_state_by_name("track1.solo")
+        );
+        assert!((op8_state.lanes[0].density - 4.25).abs() < 0.01);
+        assert_eq!(op8_state.active_form_index, 1);
+    }
 }

@@ -1,10 +1,21 @@
 /**
- * nkEditor4 External Node.js / Konduktiva JavaScript SDK
+ * nkEditor4 External Node.js & Konduktiva JavaScript SDK (`js/nkeditor-sdk.js`)
  *
- * Provides hardware constants, theme definitions, Nord Drum 2 CC tables,
- * and bidirectional OSC address space constants synchronized with the pure
- * Rust `nkeditor` desktop application (`src/theme.rs` & `src/devices.rs`).
+ * Zero-dependency EventEmitter + Promise UDP OSC client (`NkEditorClient`),
+ * Konduktiva `MusicalEnvironment` binder, hardware specifications, and theme/curve
+ * utilities synchronized with the pure Rust `nkeditor` desktop application.
  */
+
+import { EventEmitter } from 'node:events';
+import dgram from 'node:dgram';
+import {
+  encodeOscMessage,
+  decodeOscPacket,
+  encodeOscBundle,
+} from './osc-codec.js';
+
+export const DEFAULT_OSC_SERVER_PORT = 9000;
+export const DEFAULT_OSC_CLIENT_PORT = 9001;
 
 export const YAAE_THEMES = Object.freeze([
   'default',
@@ -165,6 +176,21 @@ export const OP8_FAMILY_ORDER = Object.freeze([
   'cymbal',
 ]);
 
+export const RESPONSE_CURVES = Object.freeze([
+  'linear',
+  'exponential',
+  'logarithmic',
+  's_curve',
+]);
+
+export const SOFT_TAKEOVER_MODES = Object.freeze(['catch', 'jump', 'pickup']);
+
+export const LED_OPERATING_MODES = Object.freeze([
+  'internal',
+  'external',
+  'op8_cockpit',
+]);
+
 /**
  * Formats a canonical USB-port-independent HardwareFingerprint string:
  * `vendor_id:product_id:serial:card_name` (e.g. `0944:0117::nanoKONTROL2`).
@@ -200,12 +226,6 @@ export function parseHardwareFingerprint(str) {
   };
 }
 
-export const RESPONSE_CURVES = Object.freeze(['linear', 'exponential', 'logarithmic', 's_curve']);
-
-export const SOFT_TAKEOVER_MODES = Object.freeze(['catch', 'jump', 'pickup']);
-
-export const LED_OPERATING_MODES = Object.freeze(['internal', 'external', 'op8_cockpit']);
-
 /**
  * Mirrors `ResponseCurve::transform_value` in `src/mapping_engine.rs`.
  */
@@ -231,4 +251,545 @@ export function transformContinuousValue(
   return Math.round(Math.max(0, Math.min(127, low + curved * (high - low))));
 }
 
+/**
+ * Parses a dot-notated control path (e.g. `"track1.knob"`, `"track3.slider"`, `"transport.play"`)
+ * into `{ section, track, controlName, category: 'knob' | 'slider' | 'button' }`.
+ */
+export function classifyControlPath(controlPath) {
+  const str = String(controlPath || '').trim();
+  const [prefix, controlName = ''] = str.split('.');
+  const trackMatch = /^track(\d+)$/i.exec(prefix);
+  const track = trackMatch ? Number(trackMatch[1]) : null;
 
+  let category = 'button';
+  if (controlName.startsWith('knob')) {
+    category = 'knob';
+  } else if (
+    controlName === 'slider' ||
+    controlName === 'fader' ||
+    controlName === 'master_fader'
+  ) {
+    category = 'slider';
+  }
+
+  return {
+    controlPath: str,
+    section: track !== null ? `track${track}` : prefix,
+    track,
+    controlName,
+    category,
+  };
+}
+
+// =============================================================================
+// NkEditorClient: Bidirectional UDP OSC Client & Konduktiva Bridge
+// =============================================================================
+
+/**
+ * Bidirectional UDP OSC client for communicating with the Rust `nkEditor4` app.
+ *
+ * Emits:
+ * - `'osc'` (`{ addr, args, typedArgs, rinfo }`) on any incoming OSC message
+ * - `'knob'` (`{ deviceKey, controlPath, track, controlName, value, channel, midiNumber }`)
+ * - `'slider'` (`{ deviceKey, controlPath, track, controlName, value, channel, midiNumber }`)
+ * - `'button'` (`{ deviceKey, controlPath, buttonId, isOn, value }`)
+ * - `'op8Action'` (`{ action, address, data }`)
+ */
+export class NkEditorClient extends EventEmitter {
+  constructor({
+    serverHost = '127.0.0.1',
+    serverPort = DEFAULT_OSC_SERVER_PORT,
+    listenHost = '127.0.0.1',
+    listenPort = DEFAULT_OSC_CLIENT_PORT,
+    requestTimeoutMs = 1500,
+  } = {}) {
+    super();
+    this.serverHost = serverHost;
+    this.serverPort = serverPort;
+    this.listenHost = listenHost;
+    this.listenPort = listenPort;
+    this.requestTimeoutMs = requestTimeoutMs;
+    this.socket = null;
+    this.boundAddress = null;
+  }
+
+  /**
+   * Binds the local UDP listener socket for receiving telemetry and query replies from Rust.
+   */
+  async connect() {
+    if (this.socket) {
+      return this.boundAddress;
+    }
+
+    const sock = dgram.createSocket('udp4');
+    this.socket = sock;
+
+    sock.on('message', (msgBuf, rinfo) => {
+      try {
+        const packets = decodeOscPacket(msgBuf);
+        for (const pkt of packets) {
+          this._handleIncomingOscMessage(pkt, rinfo);
+        }
+      } catch (err) {
+        this.emit('error', err);
+      }
+    });
+
+    await new Promise((resolve, reject) => {
+      const onError = (err) => {
+        sock.off('listening', onListening);
+        reject(err);
+      };
+      const onListening = () => {
+        sock.off('error', onError);
+        resolve();
+      };
+      sock.once('error', onError);
+      sock.once('listening', onListening);
+      sock.bind(this.listenPort, this.listenHost);
+    });
+
+    this.boundAddress = sock.address();
+    this.listenPort = this.boundAddress.port;
+    return this.boundAddress;
+  }
+
+  /**
+   * Closes the UDP socket.
+   */
+  async close() {
+    if (!this.socket) {
+      return;
+    }
+    const sock = this.socket;
+    this.socket = null;
+    this.boundAddress = null;
+    await new Promise((resolve) => {
+      try {
+        sock.close(() => resolve());
+      } catch {
+        resolve();
+      }
+    });
+  }
+
+  /**
+   * Sends a single OSC message to `serverHost:serverPort`.
+   */
+  async sendOsc(addr, args = []) {
+    if (!this.socket) {
+      await this.connect();
+    }
+    const encoded = encodeOscMessage(addr, args);
+    await new Promise((resolve, reject) => {
+      this.socket.send(
+        encoded,
+        0,
+        encoded.length,
+        this.serverPort,
+        this.serverHost,
+        (err) => (err ? reject(err) : resolve())
+      );
+    });
+  }
+
+  /**
+   * Sends an OSC Bundle containing multiple `{ addr, args }` messages.
+   */
+  async sendOscBundle(messages) {
+    if (!this.socket) {
+      await this.connect();
+    }
+    const encoded = encodeOscBundle(messages);
+    await new Promise((resolve, reject) => {
+      this.socket.send(
+        encoded,
+        0,
+        encoded.length,
+        this.serverPort,
+        this.serverHost,
+        (err) => (err ? reject(err) : resolve())
+      );
+    });
+  }
+
+  /**
+   * Sends an OSC request and awaits the matching reply on `expectedReplyAddr`.
+   */
+  async requestOsc(
+    addr,
+    args = [],
+    expectedReplyAddr = addr,
+    timeoutMs = this.requestTimeoutMs
+  ) {
+    if (!this.socket) {
+      await this.connect();
+    }
+
+    return new Promise((resolve, reject) => {
+      let timer = null;
+      const onMessage = (pkt) => {
+        if (pkt.addr === expectedReplyAddr) {
+          clearTimeout(timer);
+          this.off('osc', onMessage);
+          resolve(pkt);
+        }
+      };
+
+      timer = setTimeout(() => {
+        this.off('osc', onMessage);
+        reject(
+          new Error(`OSC request timeout (${timeoutMs}ms) waiting for ${expectedReplyAddr}`)
+        );
+      }, timeoutMs);
+
+      this.on('osc', onMessage);
+      this.sendOsc(addr, args).catch((err) => {
+        clearTimeout(timer);
+        this.off('osc', onMessage);
+        reject(err);
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // High-Level Promise API (Status, Devices, Presets, Controls, LEDs, Themes)
+  // ---------------------------------------------------------------------------
+
+  async queryStatus() {
+    const reply = await this.requestOsc(OSC_ENDPOINTS.status);
+    const jsonStr = reply.args[0];
+    return typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
+  }
+
+  async queryDeviceList() {
+    const reply = await this.requestOsc(OSC_ENDPOINTS.deviceList);
+    const jsonStr = reply.args[0];
+    return typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
+  }
+
+  async selectDevice(deviceId) {
+    await this.sendOsc(OSC_ENDPOINTS.deviceSelect, [String(deviceId)]);
+  }
+
+  async loadPreset(presetName) {
+    await this.sendOsc(OSC_ENDPOINTS.presetLoad, [String(presetName)]);
+  }
+
+  async savePreset(presetName) {
+    await this.sendOsc(OSC_ENDPOINTS.presetSave, [String(presetName)]);
+  }
+
+  async setControl(trackOrPath, controlNameOrValue, maybeValue) {
+    if (maybeValue !== undefined) {
+      await this.sendOsc(OSC_ENDPOINTS.controlSet, [
+        String(trackOrPath),
+        String(controlNameOrValue),
+        { type: 'i', value: Number(maybeValue) },
+      ]);
+    } else {
+      await this.sendOsc(OSC_ENDPOINTS.controlSet, [
+        String(trackOrPath),
+        { type: 'i', value: Number(controlNameOrValue) },
+      ]);
+    }
+  }
+
+  async setLed(buttonId, isOn) {
+    await this.sendOsc(OSC_ENDPOINTS.ledSet, [
+      String(buttonId),
+      { type: 'i', value: isOn ? 1 : 0 },
+    ]);
+  }
+
+  async setTheme(themeName, backgroundPreset) {
+    const args = [String(themeName)];
+    if (backgroundPreset) {
+      args.push(String(backgroundPreset));
+    }
+    await this.sendOsc(OSC_ENDPOINTS.themeSet, args);
+  }
+
+  // ---------------------------------------------------------------------------
+  // High-Level 8opPerc Performance Cockpit API
+  // ---------------------------------------------------------------------------
+
+  async queryOp8State() {
+    const reply = await this.requestOsc(OSC_ENDPOINTS.op8State);
+    const jsonStr = reply.args[0];
+    return typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
+  }
+
+  async setOp8State(stateObj) {
+    const json =
+      typeof stateObj === 'string' ? stateObj : JSON.stringify(stateObj);
+    await this.sendOsc(OSC_ENDPOINTS.op8State, [json]);
+  }
+
+  async navigateOp8Form(directionOrName) {
+    await this.sendOsc(OSC_ENDPOINTS.op8Form, [String(directionOrName)]);
+  }
+
+  async rerollOp8Timbre(laneOrAll = 'all', timbreName) {
+    const args = [String(laneOrAll)];
+    if (timbreName) {
+      args.push(String(timbreName));
+    }
+    await this.sendOsc(OSC_ENDPOINTS.op8Timbre, args);
+  }
+
+  async setOp8LaneDensity(laneIndex, density) {
+    await this.sendOsc(OSC_ENDPOINTS.op8LaneDensity(laneIndex), [
+      { type: 'f', value: Number(density) },
+    ]);
+  }
+
+  async setOp8LaneMute(laneIndex, muted) {
+    await this.sendOsc(OSC_ENDPOINTS.op8LaneMute(laneIndex), [
+      { type: 'i', value: muted ? 1 : 0 },
+    ]);
+  }
+
+  async setOp8LaneSolo(laneIndex, soloed) {
+    await this.sendOsc(OSC_ENDPOINTS.op8LaneSolo(laneIndex), [
+      { type: 'i', value: soloed ? 1 : 0 },
+    ]);
+  }
+
+  async saveOp8Snapshot(label) {
+    const args = label ? [String(label)] : [];
+    await this.sendOsc(OSC_ENDPOINTS.op8SnapshotSave, args);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Real-Time Controller Gesture Subscriptions
+  // ---------------------------------------------------------------------------
+
+  onKnob(handler) {
+    this.on('knob', handler);
+    return () => this.off('knob', handler);
+  }
+
+  onSlider(handler) {
+    this.on('slider', handler);
+    return () => this.off('slider', handler);
+  }
+
+  onButton(handler) {
+    this.on('button', handler);
+    return () => this.off('button', handler);
+  }
+
+  onOp8Action(handler) {
+    this.on('op8Action', handler);
+    return () => this.off('op8Action', handler);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Konduktiva MusicalEnvironment Live Binding
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Binds a Konduktiva `MusicalEnvironment` (or compatible live rig object) to this
+   * `NkEditorClient` so controller gestures and `/nkeditor/op8/*` actions automatically
+   * update the environment's voice lanes, density ladders, mutes/solos, and form navigation.
+   */
+  bindKonduktivaEnvironment(env, hooks = {}) {
+    if (!env || typeof env !== 'object') {
+      throw new Error('bindKonduktivaEnvironment requires a MusicalEnvironment object');
+    }
+
+    if (!env.op8VoiceLanes) {
+      env.op8VoiceLanes = OP8_FAMILY_ORDER.map((family, index) => ({
+        index,
+        family,
+        density: 1.0,
+        muted: false,
+        soloed: false,
+        level: 100,
+      }));
+    }
+
+    const unsubKnob = this.onKnob((ev) => {
+      if (ev.track >= 1 && ev.track <= 8) {
+        const lane = env.op8VoiceLanes[ev.track - 1];
+        if (lane) {
+          // Map 0..127 -> 0.1..5.0 density multiplier
+          const density = Number((0.1 + (ev.value / 127.0) * 4.9).toFixed(3));
+          lane.density = density;
+          if (typeof hooks.onLaneDensityChange === 'function') {
+            hooks.onLaneDensityChange(lane.index, density, ev);
+          }
+        }
+      }
+    });
+
+    const unsubSlider = this.onSlider((ev) => {
+      if (ev.track >= 1 && ev.track <= 8) {
+        const lane = env.op8VoiceLanes[ev.track - 1];
+        if (lane) {
+          lane.level = ev.value;
+          if (typeof hooks.onLaneLevelChange === 'function') {
+            hooks.onLaneLevelChange(lane.index, ev.value, ev);
+          }
+        }
+      }
+    });
+
+    const unsubButton = this.onButton((ev) => {
+      if (typeof hooks.onButton === 'function') {
+        hooks.onButton(ev);
+      }
+    });
+
+    const unsubOp8 = this.onOp8Action((ev) => {
+      if (ev.action === 'state' && ev.data && Array.isArray(ev.data.lanes)) {
+        env.activeForm = ev.data.active_form_name;
+        env.bpm = ev.data.bpm;
+        env.globalDensity = ev.data.global_density;
+        env.feelScale = ev.data.feel_scale;
+        ev.op8VoiceLanes = ev.data.lanes.map((l) => ({ ...l }));
+      } else if (ev.action === 'laneMute') {
+        const lane = env.op8VoiceLanes[ev.data.laneIndex];
+        if (lane) {
+          lane.muted = ev.data.muted;
+        }
+      } else if (ev.action === 'laneSolo') {
+        const lane = env.op8VoiceLanes[ev.data.laneIndex];
+        if (lane) {
+          lane.soloed = ev.data.soloed;
+        }
+      } else if (ev.action === 'laneDensity') {
+        const lane = env.op8VoiceLanes[ev.data.laneIndex];
+        if (lane) {
+          lane.density = ev.data.density;
+        }
+      }
+      if (typeof hooks.onOp8Action === 'function') {
+        hooks.onOp8Action(ev);
+      }
+    });
+
+    return {
+      unbind() {
+        unsubKnob();
+        unsubSlider();
+        unsubButton();
+        unsubOp8();
+      },
+    };
+  }
+
+  _handleIncomingOscMessage(pkt, rinfo) {
+    this.emit('osc', { ...pkt, rinfo });
+
+    const { addr, args } = pkt;
+
+    if (addr === OSC_ENDPOINTS.controlSet) {
+      // Rust notify_control_change sends: [device_key, control_path, output_value, output_channel, output_number]
+      // While echo of /nkeditor/control/set sends: [control_path, value]
+      let deviceKey = 'default';
+      let controlPath = '';
+      let value = 0;
+      let channel = 1;
+      let midiNumber = 0;
+
+      if (args.length >= 5) {
+        deviceKey = String(args[0]);
+        controlPath = String(args[1]);
+        value = Number(args[2]) || 0;
+        channel = Number(args[3]) || 1;
+        midiNumber = Number(args[4]) || 0;
+      } else if (args.length >= 2) {
+        controlPath = String(args[0]);
+        value = Number(args[1]) || 0;
+      }
+
+      const info = classifyControlPath(controlPath);
+      const payload = {
+        deviceKey,
+        controlPath: info.controlPath,
+        track: info.track,
+        controlName: info.controlName,
+        value,
+        channel,
+        midiNumber,
+      };
+
+      if (info.category === 'knob') {
+        this.emit('knob', payload);
+      } else if (info.category === 'slider') {
+        this.emit('slider', payload);
+      } else {
+        this.emit('button', {
+          ...payload,
+          buttonId: info.controlPath,
+          isOn: value >= 64,
+        });
+      }
+    } else if (addr === OSC_ENDPOINTS.ledSet) {
+      const buttonId = String(args[0] ?? '');
+      const isOn = Boolean(args[1]);
+      const deviceKey = String(args[2] ?? 'default');
+      const info = classifyControlPath(buttonId);
+      this.emit('button', {
+        deviceKey,
+        controlPath: info.controlPath,
+        track: info.track,
+        controlName: info.controlName,
+        buttonId,
+        isOn,
+        value: isOn ? 127 : 0,
+      });
+    } else if (addr.startsWith('/nkeditor/op8/')) {
+      if (addr === OSC_ENDPOINTS.op8State) {
+        let parsed = args[0];
+        if (typeof parsed === 'string') {
+          try {
+            parsed = JSON.parse(parsed);
+          } catch {
+            // keep string
+          }
+        }
+        this.emit('op8Action', {
+          action: 'state',
+          address: addr,
+          data: parsed,
+        });
+      } else if (addr === OSC_ENDPOINTS.op8SnapshotSave) {
+        this.emit('op8Action', {
+          action: 'snapshotSave',
+          address: addr,
+          data: { label: args[0] },
+        });
+      } else {
+        const laneMatch = /^\/nkeditor\/op8\/lane\/(\d+)\/(density|mute|solo)$/.exec(
+          addr
+        );
+        if (laneMatch) {
+          const laneIndex = Number(laneMatch[1]);
+          const prop = laneMatch[2];
+          if (prop === 'density') {
+            this.emit('op8Action', {
+              action: 'laneDensity',
+              address: addr,
+              data: { laneIndex, density: Number(args[0]) },
+            });
+          } else if (prop === 'mute') {
+            this.emit('op8Action', {
+              action: 'laneMute',
+              address: addr,
+              data: { laneIndex, muted: Boolean(args[0]) },
+            });
+          } else if (prop === 'solo') {
+            this.emit('op8Action', {
+              action: 'laneSolo',
+              address: addr,
+              data: { laneIndex, soloed: Boolean(args[0]) },
+            });
+          }
+        }
+      }
+    }
+  }
+}
