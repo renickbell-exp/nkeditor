@@ -8,10 +8,12 @@
 //! `egui` controller surface and visual mapping inspector ([`ui_editor`]),
 //! and the bidirectional UDP OSC server and telemetry broadcaster ([`osc_server`]).
 
+pub mod config_parser;
 pub mod devices;
 pub mod hardware;
 pub mod layer_manager;
 pub mod led_controller;
+pub mod librarian;
 pub mod mapping_engine;
 pub mod midi_io;
 pub mod op8_cockpit;
