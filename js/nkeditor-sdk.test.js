@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import dgram from 'node:dgram';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   YAAE_THEMES,
   TWOBOWLS_BACKGROUND_PRESETS,
@@ -30,6 +33,11 @@ import {
   mapMidiCCToMidimixFeelScale,
   mapFeelScaleToMidiCC,
   resolveLaneIndex,
+  PulsedNanoKontrol2Rig,
+  createQuantizedDensityState,
+  discoverNanoKontrol2Hardware,
+  runNanoKontrol2FormBatchRehearsal,
+  DEFAULT_PRESET_POOL_FILENAME,
 } from './index.js';
 
 describe('nkEditor4 Companion JavaScript SDK & OSC Codec (Epochs 1-7)', () => {
@@ -384,5 +392,84 @@ describe('nkEditor4 Companion JavaScript SDK & OSC Codec (Epochs 1-7)', () => {
     assert.equal(burst.length, 32);
     assert.equal(burst[0].controller, 16);
     assert.equal(burst[31].controller, 61);
+  });
+
+  it('verifies complete Korg nanoKONTROL2 8opPerc live rig rehearsal in deterministic --dry mode with OSC sync and preset pool JSONL', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nkeditor4-epoch9-'));
+    const poolPath = path.join(tmpDir, DEFAULT_PRESET_POOL_FILENAME);
+
+    // Create a local UDP OSC server to verify OSC synchronization from PulsedNanoKontrol2Rig
+    const oscReceiver = dgram.createSocket('udp4');
+    const receivedOscAddresses = [];
+    oscReceiver.on('message', (msg) => {
+      for (const pkt of decodeOscPacket(msg)) {
+        receivedOscAddresses.push(pkt.addr);
+      }
+    });
+    await new Promise((resolve) => oscReceiver.bind(0, '127.0.0.1', resolve));
+    const serverPort = oscReceiver.address().port;
+
+    const oscClient = new NkEditorClient({
+      serverHost: '127.0.0.1',
+      serverPort,
+      listenPort: 0,
+    });
+
+    try {
+      await oscClient.connect();
+      const summary = await runNanoKontrol2FormBatchRehearsal({
+        dryRun: true,
+        presetPoolPath: poolPath,
+        oscClient,
+      });
+
+      assert.equal(summary.dryRun, true);
+      assert.equal(summary.hardware.vendorId, '0944');
+      assert.equal(summary.hardware.productId, '0117');
+
+      // 32nd-note density latch verification (beat 0.03 -> latches at beat 0.125)
+      assert.equal(summary.kickDensityPendingBeat, 0.125);
+      assert.equal(summary.globalDensityPendingBeat, 0.125);
+      assert.equal(summary.preLatchKickDensity, 1.0);
+      assert.ok(summary.postLatchKickDensity > 5.0); // 5.0x kick * stepped global density
+
+      // Solo + Mute priority verification (Kick + Snare soloed -> only lanes 0 and 1 audible)
+      assert.deepEqual(
+        summary.soloAudibleMask,
+        [true, true, false, false, false, false, false, false]
+      );
+
+      // Exact midpoint feel scale after Rewind + Forward (CC 64 = 0.5)
+      assert.equal(summary.midpointFeelScale, 0.5);
+
+      // Next-bar single-lane timbre reroll & full 8-voice Cycle timbre set
+      assert.equal(summary.snareQueuedTargetBeat, 4.0);
+      assert.equal(summary.snareActiveTimbreAfterBar, 'snare-var-0001');
+      assert.equal(summary.cycleSetIndex, 1);
+
+      // Form bank navigation (Track Right -> form-0002, Track Left -> form-0001)
+      assert.equal(summary.nextFormName, 'form-0002');
+      assert.equal(summary.prevFormName, 'form-0001');
+
+      // Atomic preset snapshot saved to nanokontrol2-random-preset-pool.jsonl via Marker Set (CC 60)
+      assert.equal(summary.savedPresets.length, 1);
+      assert.equal(summary.savedPresets[0].id, 'preset-0001');
+      assert.equal(summary.savedPresets[0].triggerCc, 60);
+      assert.equal(summary.savedPresets[0].timbres.kick, 'kick-set-0002');
+      assert.ok(fs.existsSync(poolPath));
+
+      // Wait briefly for UDP loopback OSC datagrams to arrive
+      await new Promise((r) => setTimeout(r, 25));
+      assert.ok(receivedOscAddresses.includes('/nkeditor/op8/lane/0/density'));
+      assert.ok(receivedOscAddresses.includes('/nkeditor/op8/lane/3/mute'));
+      assert.ok(receivedOscAddresses.includes('/nkeditor/op8/lane/1/solo'));
+      assert.ok(receivedOscAddresses.includes('/nkeditor/op8/timbre'));
+      assert.ok(receivedOscAddresses.includes('/nkeditor/op8/form'));
+      assert.ok(receivedOscAddresses.includes('/nkeditor/op8/snapshot/save'));
+    } finally {
+      await oscClient.close();
+      await new Promise((resolve) => oscReceiver.close(resolve));
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
